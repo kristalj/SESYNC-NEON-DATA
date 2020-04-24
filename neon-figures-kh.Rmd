@@ -1,0 +1,151 @@
+---
+title: "neon-figures"
+author: "Kelly Hondula"
+date: "1/27/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warnings = FALSE)
+```
+
+visualizations of neon data
+
+```{r}
+library(readr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(glue)
+
+data_dir <- "/nfs/public-data/NEON_workshop_data/NEON"
+
+landcover <- readr::read_csv(glue("{data_dir}/NEON-AOP-LandCover.csv"))
+
+lc_long <- landcover %>%
+  dplyr::select(-all_developed) %>%
+  tidyr::gather("class", "percentage", 2:19)
+
+nlcd_cols <- c("Open Water" = "#476BA0", 
+               "Perennial Ice/Snow" = "#D1DDF9",
+              "Developed, Open Space" = "#DDC9C9", 
+              "Developed, Low Intensity" = "#D89382", 
+              "Developed, Medium Intensity" = "#ED0000", 
+              "Developed High Intensity" = "#AA0000",
+              "Barren Land (Rock/Sand/Clay)" = "#B2ADA3",
+              "Deciduous Forest" = "#68AA63", 
+              "Evergreen Forest" = "#1C6330", 
+              "Mixed Forest" = "#B5C98E",
+              "Dwarf Scrub" = "#A58C30", 
+              "Shrub/Scrub" = "#CCBA7C",
+              "Grassland/Herbaceous" = "#E2E2C1", 
+              "Sedge/Herbaceous" = "#C9C977", 
+              "Pasture/Hay" = "#DBD83D", 
+              "Cultivated Crops" = "#AA7028",
+              "Woody Wetlands" = "#BAD8EA", 
+              "Emergent Herbaceous Wetlands" = "#70A3BA")
+
+nlcd_stacked_plot <- lc_long %>%
+  ggplot(aes(x = Site, y = percentage, fill = class)) +
+  geom_bar(aes(fill = class), stat = "identity") +
+  theme_bw() +
+  ylab("% AOP footprint") + xlab("NEON Domain and Site") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  theme(legend.position = "bottom", legend.title=element_blank()) +
+  scale_fill_manual(values = nlcd_cols)
+```
+
+```{r}
+pdf("nlcd_stacked_barplot.pdf", width = 10, height = 6)
+print(nlcd_stacked_plot)
+dev.off()
+```
+
+```{r}
+landcover %>% 
+  mutate_if(is.numeric, round, 3) %>%
+  arrange(-all_developed) %>%
+  DT::datatable()
+```
+
+```{r}
+nlcd_cols2 <- c("Open Water" = "#476BA0", 
+               "Perennial Ice/Snow" = "#D1DDF9",
+              "Developed, Open Space" = "#DDC9C9", 
+              "Developed, Low Intensity" = "#D89382", 
+              "Developed, Medium Intensity" = "#ED0000", 
+              "Developed High Intensity" = "#AA0000",
+              "Barren Land (Rock/Sand/Clay)" = "#B2ADA3",
+              "Deciduous Forest" = "#68AA63", 
+              "Evergreen Forest" = "#1C6330", 
+              "Mixed Forest" = "#B5C98E",
+              "Dwarf Scrub" = "#A58C30", 
+              "Shrub/Scrub" = "#CCBA7C",
+              "Grassland/Herbaceous" = "#E2E2C1", 
+              "Sedge/Herbaceous" = "#C9C977", 
+              "Pasture/Hay" = "#DBD83D", 
+              "Cultivated Crops" = "#AA7028",
+              "Woody Wetlands" = "#BAD8EA", 
+              "Emergent Herbaceous Wetlands" = "#70A3BA",
+              "all_developed" = "red")
+
+lc_areas_long <- read_csv(file.path(data_dir, "NEON-AOP-LandCover_areas.csv")) %>%
+  tidyr::gather("class", "area_ha", 2:20)
+
+class_facet_histograms <- lc_areas_long %>%
+  ggplot(aes(x = area_ha, 
+             fill = class, col = class)) +
+  geom_histogram(alpha = 0.5, bins = 10) +
+  facet_wrap(vars(class), scales = "free_x") +
+  theme_minimal() + 
+  theme(legend.position = "none") +
+  ylab("Number of sites") + xlab("Area (hectares)") +
+  scale_fill_manual(values = nlcd_cols2) +
+  scale_color_manual(values = nlcd_cols2)
+
+```
+
+```{r}
+pdf("nlcd_classes_facets.pdf", width = 10.5, height = 6)
+print(class_facet_histograms)
+dev.off()
+```
+
+```{r}
+read_csv(file.path(data_dir, "NEON-AOP-LandCover_areas.csv")) %>% 
+  mutate_if(is.numeric, round, 3) %>%
+  arrange(-all_developed) %>%
+  DT::datatable()
+```
+## impervious
+
+calculate total area with more than 10% impervious at each site
+histogram of area
+
+```{r}
+all_aop_impervious <- read_csv(file.path(data_dir, "NEON-AOP-Impervioius.csv")) %>%
+  mutate(count_above10 = `10-50%` + `over 50%`) %>%
+  mutate(area_above10_km2 = (count_above10*30)/1e6)
+
+imp_hist <- all_aop_impervious %>%
+  ggplot(aes(x = area_above10_km2)) +
+  geom_histogram(fill = "gray", col = "black", bins = 20) +
+  theme_minimal() +
+  ylab("Number of sites") + 
+  xlab(expression(paste("Area with >10% impervious cover (", km^2, ")"))) 
+
+```
+
+```{r}
+all_aop_impervious %>% 
+  dplyr::select(Site, area_above10_km2) %>%
+  arrange(-area_above10_km2) %>%
+  DT::datatable()
+```
+
+```{r}
+pdf("nlcd_impervious.pdf", width = 5, height = 3)
+print(imp_hist)
+dev.off()
+```

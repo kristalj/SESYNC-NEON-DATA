@@ -1,0 +1,208 @@
+---
+title: "ACS demographic data across NEON AOP sites"
+output: 
+  ioslides_presentation: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+library(tidyverse); library(gridExtra)
+
+data_dir <- "/nfs/public-data/NEON_workshop_data/NEON"
+
+# read in data
+ACS <- readr::read_csv(file.path(data_dir, "NEON_AOP_ACS.csv"), col_types = "nccnccccccccc") # ACS data
+# ACS <- readr::read_csv("NEON_AOP_ACS.csv", col_types = "nccnccccccccc") # ACS data
+```
+
+```{r, include=FALSE}
+# make wide dataframe
+acs_df_w <- ACS %>% 
+            select(GEOID, description, estimate, Site) %>% 
+            pivot_wider(names_from = description, values_from = estimate)
+```
+
+```{r, include=FALSE}
+# calculate unemployment rate: unemployed / (unemployed + employed)
+
+r_unemp <- acs_df_w %>% 
+           select(GEOID, Site, `In Labor Force:`, Employed, Unemployed) %>% 
+           mutate(Unemploy_Rate = Unemployed/`In Labor Force:`)
+
+```
+
+```{r ACS subsetting, include=FALSE}
+# Function to sub-set ACS dataframe by variables for plotting ease
+sub_acs <- function(df, var, newcol){
+           sub <- df %>% 
+                  filter(description == var) %>% 
+                  group_by(Site) %>% 
+                  mutate({{newcol}} :=  mean(estimate)) %>% 
+                  ungroup() %>% 
+                  distinct(Site, {{newcol}})
+           return(sub)
+           }
+```
+
+```{r, include=FALSE}
+# population
+pop <- sub_acs(ACS, "Population", mean_pop)
+
+# employed
+emp <- sub_acs(ACS, "Employed", mean_employed)
+
+# unemployed
+unemp <- sub_acs(ACS, "Unemployed", mean_unemployed)
+
+# Income in the Past 12 Months Below Poverty Level:
+ilesspov <- sub_acs(ACS, "Income in the Past 12 Months Below Poverty Level:", mean_in_below_pov)
+
+# agriculture and natural resources
+agri <- sub_acs(ACS, "Agriculture, Forestry, Fishing and Hunting, and Mining", mean_agri_nat_res)
+
+# educational and health
+edu <- sub_acs(ACS, "Educational Services, and Health Care and Social Assistance", mean_edu_hlth)
+
+```
+
+```{r, include=FALSE}
+# Employment Sectors
+
+sectors <- c("Population", 
+             "Total across all industries", "Agriculture, Forestry, Fishing and Hunting, and Mining", "Construction", "Manufacturing", "Wholesale Trade", 
+             "Retail Trade", "Transportation and Warehousing, and Utilities", "Information", "Finance and Insurance, and Real Estate and Rental and Leasing",
+             "Professional, Scientific, and Management, and Administrative and Waste Management Services", 
+             "Educational Services, and Health Care and Social Assistance", "Arts, Entertainment, and Recreation, and Accommodation and Food Services", 
+             "Other Services, Except Public Administration", "Public Administration") 
+
+pop_sub_df <- ACS %>% 
+              filter(description %in% c(sectors))  %>% 
+              select(GEOID, Site, estimate, description)
+              # group_by(variable) %>% 
+              # mutate(mean_emp_sector = mean(estimate)) %>% 
+              # ungroup() %>% 
+              # distinct(description, mean_emp_sector) 
+
+emp_s <- acs_df_w %>% 
+         select(Site, Population, `Total across all industries`:`Public Administration`) %>% 
+         pivot_longer(c(-Site, -Population, -`Total across all industries`), names_to = "sector", values_to = "estimate")
+
+```
+
+
+```{r plot function, include=FALSE}
+plot_var <- function(dat, x, y, z){
+            p <- ggplot(data = dat, aes(x = {{x}}, y = {{y}}, fill = {{z}})) +
+                 geom_col(position = "dodge")  + theme_bw() + 
+                 theme(axis.text.x = element_text(angle = 90, vjust = 0.5),
+                       axis.title = element_text(size = 16),
+                       axis.text = element_text(size = 8))
+            return(p)
+}
+```
+
+## Population
+
+```{r plots}
+pop_plot <- plot_var(pop, x = Site, y = mean_pop, z = "blue") + 
+            theme(legend.position = "none") + ylab("mean population") +
+            scale_fill_manual(values = c("blue"))
+pop_plot
+```
+
+```{r, include=FALSE, eval=FALSE}
+# print population figure
+pdf("population_acs.pdf", width = 10, height = 6)
+print(pop_plot)
+dev.off()
+```
+
+## Employed
+
+```{r}
+plot_var(emp, Site, mean_employed, z = "#66CC00") + 
+         theme(legend.position = "none") +
+         scale_fill_manual(values = c("#66CC00"))
+```
+
+## Unemployed
+
+```{r}
+u <- plot_var(unemp, Site, mean_unemployed, z = "#333300") + 
+              theme(legend.position = "none") +
+              scale_fill_manual(values = c("#333300"))
+u
+```
+
+## Unemployment Rate
+
+```{r, message=FALSE, warning=FALSE}
+run <- plot_var(r_unemp, Site, Unemploy_Rate, z = "#33FF99") + 
+                theme(legend.position = "none",
+                      axis.title = element_text(size = 16)) +
+                scale_fill_manual(values = c("#33FF99")) + 
+                ylab("unemployment rate")
+run
+```
+
+```{r, include=FALSE, eval=FALSE}
+# print unemployment rate figure
+pdf("unemployment_rate_acs.pdf", width = 10, height = 6)
+print(run)
+dev.off()
+```
+
+## Income below poverty
+
+```{r}
+i <- plot_var(ilesspov, Site, mean_in_below_pov, z = "#666600") + 
+              theme(legend.position = "none") +
+              scale_fill_manual(values = c("#666600"))
+i
+```
+
+---
+
+```{r}
+grid.arrange(i,u)
+```
+
+## Agriculture and natural resources
+
+```{r}
+plot_var(agri, Site, mean_agri_nat_res, z = "#FF9933") + 
+         theme(legend.position = "none") +
+         scale_fill_manual(values = c("#FF9933"))
+```
+
+## Educational services and health care
+
+```{r}
+plot_var(edu, Site, mean_edu_hlth, z = "#9900FF") + 
+         theme(legend.position = "none") +
+         scale_fill_manual(values = c("#9900FF"))
+```
+
+## Employment Sectors
+
+```{r}
+sec <- ggplot(emp_s, aes(y = estimate, x = sector, fill = "pink", color = "pink")) + 
+       geom_col() + theme_bw() + coord_flip() + ylab("Number of Employees") +
+       scale_x_discrete(labels = function(x) str_wrap(x, width = 40)) + 
+       theme(axis.text.x = element_text(angle = 90, vjust = 0.5),
+             axis.text = element_text(size = 8),
+             axis.title = element_text(size = 16),
+             legend.position = "none")
+sec
+```
+
+```{r, include=FALSE, eval=FALSE}
+# print employment sectors figure
+pdf("employment_sectors_acs.pdf", width = 10, height = 6)
+print(sec)
+dev.off()
+```
+
+
+
