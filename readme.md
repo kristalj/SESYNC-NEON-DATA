@@ -2,11 +2,10 @@
 
 This repository includes:  
 * scripts for acquiring non-neon data for workshop  
-  - `fips-codes-for-neon-sites.R`
-  - `getNEONcensusdata.R`
-  - `nlcd-for-neon-site.R`
-* scripts for plotting neon sites
-  - `map.R`
-* scripts for plotting social science data   
-  - `ACS_slides.Rmd`
-  - `NASS_slides.Rmd`
+  - [ACS](https://https://github.com/kristalj/SESYNC-NEON-DATA/ACS)
+  - [NLCD](https://https://github.com/kristalj/SESYNC-NEON-DATA/NLCD)
+  - [NASS](https://https://github.com/kristalj/SESYNC-NEON-DATA/NASS)
+* scripts for identifying and plotting neon sites
+  - [Geography](https://https://github.com/kristalj/SESYNC-NEON-DATA/Geography)
+* scripts for plotting social science data and visualizations of the data   
+  - [Visualizations](https://https://github.com/kristalj/SESYNC-NEON-DATA/Visualizations)
