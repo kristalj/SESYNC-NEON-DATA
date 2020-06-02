@@ -1,4 +1,15 @@
-## Load the census block group (probably use tigris::block_group)
+library(tigris)
+library(tidycensus) #need to generate your own Census API key
+library(sf)
+library(tidyverse)
+
+#Load nlcd data to ensure that you have the right resolutions and projections in the data below
+
+## Prepping the population data
+#Download the census block data - tidycensus has an option for geometry = true, but that can fail in some geographies
+#Convert into block group raster (probably use fasterize)
+
+
 
 
 ##
