@@ -50,7 +50,7 @@ imp.surf.crop <- raster::crop(imp.surf.desc, spTransform(as(pop.projected, "Spat
 imp.surf.mask <- raster::mask(imp.surf.crop, spTransform(as(pop.projected, "Spatial"), CRSobj = proj4string(imp.surf.desc))) #mask all non-county values to NA
 #get codes to mask out
 z <- deratify(imp.surf.mask)[[5]] #need to get the actual values
-reclass.table <- matrix(c(1,6,1,7,14,NA), ncol=3) #reclassify values 1-6 into 1 for keep drop the rest
+reclass.table <- matrix(c(1,5,NA,6,14,1), byrow=TRUE, ncol=3) #reclassify values 1-6 into 1 for keep drop the rest
 
 imp.roads <- reclassify(z, reclass.table)
 imp.roads.p <- projectRaster(imp.roads, lu.ratio.zp)#have to reproject the descriptor file
