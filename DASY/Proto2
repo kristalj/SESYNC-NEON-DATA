@@ -179,9 +179,6 @@ fipscodes = fipscodes %>%
 #run through a subset of the fips codes for a sample 
 fipscodes_mini <- fipscodes[1:10, ]
 
-#if want to run through all of the fips codes 
-#all_fipscodes <- data.frame(fipscodes)
-
 
 library(rslurm)
 slurm_apply(Get_Dasy_Data, fipscodes_mini, jobname = 'DASY_apply',
