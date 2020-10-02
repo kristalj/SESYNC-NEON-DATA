@@ -1,5 +1,6 @@
 devtools::install_github("ropensci/FedData")
 
+#install.packages("fasterize")
 
 library(tidycensus)
 census_api_key("9445a72c7c9ebc64c409d140ce678927c9a25937")
@@ -9,6 +10,7 @@ library(raster)
 library(sf)
 library(dplyr)
 library(glue)
+library(fasterize)
 v16 <- load_variables(2016, "acs5", cache = TRUE)
 v10 <- load_variables(2010, "sf1", cache = TRUE)
 #set the id's for the county we want
@@ -58,7 +60,7 @@ imp.surf.crop <- raster::crop(imp.surf.desc, spTransform(as(pop.projected, "Spat
 #plot(imp.surf.crop)
 imp.surf.mask <- raster::mask(imp.surf.crop, spTransform(as(pop.projected, "Spatial"), CRSobj = proj4string(imp.surf.desc))) #mask all non-county values to NA
 #get codes to mask out
-z <- deratify(imp.surf.mask)[[5]] #need to get the actual values
+z <- deratify(imp.surf.mask)[[5]] #need to get the actual values- this is where i get an error to self finalize message 
 reclass.table <- matrix(c(1,6,1,7,14,NA), ncol=3) #reclassify values 1-6 into 1 for keep drop the rest
 
 imp.roads <- reclassify(z, reclass.table)
@@ -92,6 +94,9 @@ diffs <- pop.projected$estimate - tst$layer ##Values should be zero (or very, ve
 
 Get_Dasy_Data <- function(stid, ctyid){
   
+  
+  devtools::install_github("ropensci/FedData")
+  
   library(tidycensus)
   census_api_key("9445a72c7c9ebc64c409d140ce678927c9a25937")
   library(FedData) #has to be dev version or won't dl 2016 data
@@ -100,6 +105,8 @@ Get_Dasy_Data <- function(stid, ctyid){
   library(sf)
   library(dplyr)
   library(glue)
+  
+  print(c(stid, ctyid))
   
   pop <- get_acs(geography = "block group", variables = "B00001_001", 
                  year = 2016, state= stid, county = ctyid, 
@@ -158,14 +165,14 @@ Get_Dasy_Data <- function(stid, ctyid){
   #this is where will put the file path for rswanwick public data 
   my_filename = glue("/nfs/rswanwick-data/DASY/neon-dasy-{stid}-{ctyid}.tif")
   
-  writeRaster(dasy.pop, my_filename)
+  writeRaster(dasy.pop, my_filename, overwrite = TRUE) 
   
   message(glue("saved raster with stid {stid} and ctyid {ctyid}. Onto the next one!"))
   
 }
 
 #then this will allow to run the function with the following county and state id as a sample 
-Get_Dasy_Data(stid = "24", ctyid = "001")
+Get_Dasy_Data(stid = "04", ctyid = "001")
 
 #get the fips codes that the cluster can run through 
 fipscodes = data_frame(fips_codes)
@@ -176,15 +183,28 @@ fipscodes = fipscodes %>%
     ctyid = county_code
   ) %>% dplyr::select(stid, ctyid)
 
+fipscodes1 = data_frame(fips_codes)
+
 #run through a subset of the fips codes for a sample 
-fipscodes_mini <- fipscodes[178:192, ]
+fipscodes_mini <- fipscodes[1201:1218, ]
+
 
 
 library(rslurm)
 sjob = slurm_apply(Get_Dasy_Data, fipscodes_mini, jobname = 'DASY_apply',
-                    nodes = 1, cpus_per_node = 2, pkgs = c("tidycensus", "raster", "tidyverse", "FedData", "sf", "dplyr", "glue"),
+                    nodes = 8, cpus_per_node = 1, 
+                    pkgs = c("tidycensus", "fasterize", "raster", "tidyverse", 
+                             "FedData", "sf", "dplyr", "glue"),
                     submit = TRUE)
 
+get_job_status(sjob)
+
+#need to double check rest of this below 
+joboutput = get_slurm_out(sjob)
+
+#clean_up_files(sjob)
+
+#need to add another line to get output from the job 
 
 ##TODO: Figure out a way to avoid downloading and reloading the impervious surface descriptor file 
 ##TODO: Profile for unnecessary slow-downs
