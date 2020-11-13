@@ -6,15 +6,16 @@
 # =========================
 
 Get_Dasy_Data <- function(stid, ctyid){
-  
-  # library(tidycensus)
+
   census_api_key(readLines('/nfs/rswanwick-data/rswanwick_census_api_key.txt')) 
   # This is done to not have the API key in your environment or scripts (good practice)
 
-  
   pop <- get_acs(geography = "block group", variables = "B00001_001", 
                  year = 2016, state= stid, county = ctyid, 
                  geometry = TRUE)   
+  
+  # Data QC: remove empty geometries from pop
+  pop <- pop[!is.na(st_dimension(pop)), ]
   
   #download land use data NEED TO MAKE SURE WE DON"T HAVE TO HAVE PROJECTIONS MATCHING BEFOREHAND
   lu <- get_nlcd(template = pop, label = paste0(stid, ctyid),year = 2016, dataset = "Impervious")
@@ -38,19 +39,21 @@ Get_Dasy_Data <- function(stid, ctyid){
   lu.ratio.zp <- mask(lu.ratio, as(zero.pop, "Spatial"), inverse=TRUE)
   
   #get the impervious surface descriptor dataset from: https://www.mrlc.gov/data?f%5B0%5D=category%3ALand%20Cover&f%5B1%5D=category%3AUrban%20Imperviousness&f%5B2%5D=year%3A2016
-  #Ideally we'll figure out a way to download this once, bring it in, and crop to the appropriate geometry
+  # Now VRT is used.
   imp.surf.desc <- raster("/nfs/rswanwick-data/DASY/NLCD_2016_impervious.vrt")
   #mask out primary, secondary, and urban tertiary roads
   imp.surf.crop <- raster::crop(imp.surf.desc, spTransform(as(pop.projected, "Spatial"), CRSobj = proj4string(imp.surf.desc))) #crop imp surface to county
   #plot(imp.surf.crop)
   imp.surf.mask <- raster::mask(imp.surf.crop, spTransform(as(pop.projected, "Spatial"), CRSobj = proj4string(imp.surf.desc))) #mask all non-county values to NA
-  #get codes to mask out
-  z <- deratify(imp.surf.mask)[[5]] #need to get the actual values
+  
+  # Correct for zero to one based indexing by adding 1 to the raster
+  imp.surf.mask <- imp.surf.mask + 1
+
   reclass.table <- matrix(c(1,6,1,7,14,NA), ncol=3) #reclassify values 1-6 into 1 for keep drop the rest
   
-  imp.roads <- reclassify(z, reclass.table)
+  imp.roads <- reclassify(imp.surf.mask, reclass.table)
   imp.roads.p <- projectRaster(imp.roads, lu.ratio.zp)#have to reproject the descriptor file
-  #Mask oout roads (i.e, all NonNA values in imp.roadss.p)
+  #Mask out roads (i.e, all NonNA values in imp.roads.p)
   RISA <- overlay(lu.ratio.zp, imp.roads.p, fun = function(x, y) {
     x[is.na(y[])] <- NA
     return(x)
@@ -67,7 +70,7 @@ Get_Dasy_Data <- function(stid, ctyid){
   dasy.pop <- (bg.sum.pop/bg.sum.RISA) * RISA
   
   #this is where will put the file path for rswanwick public data 
-  my_filename = as.character(glue("~/temp/DASY/neon-dasy-{stid}-{ctyid}.tif"))
+  my_filename = as.character(glue("/nfs/rswanwick-data/DASY/tifs/neon-dasy-{stid}-{ctyid}.tif"))
   
   writeRaster(dasy.pop, my_filename)
   
@@ -82,10 +85,49 @@ Get_Dasy_Data <- function(stid, ctyid){
 # Test code
 # =========
 
+# Load packages
 library(tidycensus)
 library(FedData) #has to be dev version or won't dl 2016 data
 library(tidyverse)
 library(raster)
 library(sf)
-library(dplyr)
 library(glue)
+
+# Test on a single county.
+Get_Dasy_Data(stid = "24", ctyid = "001") # Works.
+Get_Dasy_Data(stid = "24", ctyid = "003") # Works after removing empty geometries from the pop object.
+Get_Dasy_Data(stid = "24", ctyid = "013")
+
+# Test a Slurm job with a small number of counties.
+
+#get the fips codes that the cluster can run through 
+fipscodes = data_frame(fips_codes)
+
+fipscodes = fipscodes %>% 
+  rename(
+    stid = state_code, 
+    ctyid = county_code
+  ) %>% dplyr::select(stid, ctyid)
+
+#run through a subset of the fips codes for a sample (10 counties in MD)
+fipscodes_mini <- fipscodes[fipscodes$stid == "24", ][1:10,]
+
+# Submit Slurm job with the 10 counties done across 2 CPUs
+library(rslurm)
+sjob = slurm_apply(Get_Dasy_Data, fipscodes_mini, jobname = 'DASYtest',
+                   nodes = 1, cpus_per_node = 4, pkgs = c("tidycensus", "raster", "tidyverse", "FedData", "sf", "dplyr", "glue"),
+                   submit = TRUE)
+
+# Check status (this can be repeated as many times as you want until jstatus$completed is TRUE)
+# Warnings will be issued but you can ignore them.
+# You can also see whether your job is still running by typing "squeue" into the Terminal tab.
+jstatus <- get_job_status(sjob)
+jstatus$completed
+jstatus$queue
+
+# Get output after job is done. This is just for diagnostics. The actual files are written to /nfs/rswanwick-data/DASY/tifs/
+joutput <- get_slurm_out(sjob)
+# Run cleanup_files to delete the temporary diagnostic files.
+cleanup_files(sjob)
+
+# Note: To run the full job use fipscodes instead of fipscodes_mini. Set nodes=1 and cpus_per_node=8. 
