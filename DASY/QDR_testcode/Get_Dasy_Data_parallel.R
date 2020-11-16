@@ -1,5 +1,5 @@
-### Clean version of Get_Dasy_Data
-# QDR 12 Nov 2020
+### Script to run Get_Dasy_Data directly through slurm **NOT rslurm**
+### QDR 13 Nov 2020
 
 # =========================
 # BEGIN FUNCTION DEFINITION
@@ -18,9 +18,8 @@ Get_Dasy_Data <- function(stid, ctyid){
   pop <- pop[!is.na(st_dimension(pop)), ]
   
   #download land use data NEED TO MAKE SURE WE DON"T HAVE TO HAVE PROJECTIONS MATCHING BEFOREHAND
-  # Set an extraction data directory so that we don't have multiple tasks downloading to the same directory.
-  # Instead of using tempdir() use a temporary directory I created for the purpose. This might avoid permissions issues.
-  nlcd_download_path <- file.path('/nfs/rswanwick-data/DASY/temp_files', paste('nlcd', stid, ctyid, sep = '_'))
+  # Set an extraction data directory so that we don't have multiple tasks downloading to the same directory,.
+  nlcd_download_path <- file.path(tempdir(), paste('nlcd', stid, ctyid, sep = '_'))
   lu <- get_nlcd(template = pop, label = paste0(stid, ctyid),year = 2016, dataset = "Impervious", extraction.dir = nlcd_download_path)
   
   #download 2010 block-level data, filter for only the blocks with 0 pop
@@ -85,13 +84,8 @@ Get_Dasy_Data <- function(stid, ctyid){
 # END FUNCTION DEFINITION
 # =======================
 
-
-
-# Code to run full job on all counties
-# ====================================
-
-# Rewrite the parallel code so that no two counties from the same state are being run at the same time.
-# This will prevent two tasks from trying to access the same state-level files at the same time, which causes an error.
+# Run function in parallel
+# ========================
 
 # Load packages
 library(tidycensus)
@@ -100,8 +94,14 @@ library(tidyverse)
 library(raster)
 library(sf)
 library(glue)
+library(furrr) 
 
-# Get the fips codes for all counties
+options(mc.cores = 8) # Use all eight cores on a node.
+plan(multicore) # Sets up parallel execution of function.
+
+# Test a Slurm job with a small number of counties.
+
+#get the fips codes that the cluster can run through 
 fipscodes = data_frame(fips_codes)
 
 fipscodes = fipscodes %>% 
@@ -110,33 +110,9 @@ fipscodes = fipscodes %>%
     ctyid = county_code
   ) %>% dplyr::select(stid, ctyid)
 
-# Get rid of the ones that are not in the 48 continental states and DC
-not48 <- c('02','15','60','66','69','72','74','78')
-fipscodes <- filter(fipscodes, !stid %in% not48)
+#run through a subset of the fips codes for a sample (20 counties in MD)
+fipscodes_mini <- fipscodes[fipscodes$stid == "24", ][1:20,]
 
-# Split into a list by state.
-fips_list <- fipscodes %>% group_by(stid) %>% group_split
-
-# Function to run all counties in a state
-get_dasy_all_counties <- function(fips) {
-  walk(fips$ctyid, ~ Get_Dasy_Data(stid = fips$stid[1], ctyid = .))
-}
-
-sjob <- slurm_map(fips_list, get_dasy_all_counties, jobname = 'DASYallcounties',
-                  nodes = 2, cpus_per_node = 8, pkgs = c("tidycensus", "raster", "tidyverse", "FedData", "sf", "dplyr", "glue"),
-                  submit = TRUE)
-
-# Get output after job is done. This is just for diagnostics. The actual files are written to /nfs/rswanwick-data/DASY/tifs/
-joutput <- get_slurm_out(sjob)
-# Run cleanup_files to delete the temporary diagnostic files.
-cleanup_files(sjob)
-# Also delete the temporarily downloaded files
-# This is needed because now that we've created the file download directory manually, it does not automatically go away once the job finishes.
-system2('rm', '-r /nfs/rswanwick-data/DASY/temp_files/*') 
-
-# Check which jobs did not run properly. This will be TRUE for all where the file was written as intended.
-fipscodes$tif_exists <- pmap_lgl(fipscodes, function(stid, ctyid) file.exists(as.character(glue("/nfs/rswanwick-data/DASY/tifs/neon-dasy-{stid}-{ctyid}.tif"))))
-
-# Filter out the completed ones.
-fipscodes <- fipscodes %>%filter(!tif_exists)
-# Now run again starting at line 118, to retry the ones that didn't run previously.
+### Execute Get_Dasy_Data in parallel across the subset of fips codes.
+future_pmap(fipscodes_mini, Get_Dasy_Data)
+          
