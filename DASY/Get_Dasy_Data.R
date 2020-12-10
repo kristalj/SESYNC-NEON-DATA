@@ -1,11 +1,17 @@
 ### Clean version of Get_Dasy_Data
 # QDR 12 Nov 2020
+# QDR modified 10 Dec 2020 with these changes
+# - replace get_nlcd() with extracting directly from the NLCD raster already on SESYNC's server
+# - project everything to Albers equal-area before doing the computations so that area isn't distorted.
 
 # =========================
 # BEGIN FUNCTION DEFINITION
 # =========================
 
 Get_Dasy_Data <- function(stid, ctyid){
+  
+  # Albers equal-area projection
+  aea <- '+proj=aea +lat_1=29.5 +lat_2=45.5 +lat_0=23 +lon_0=-96 +x_0=0 +y_0=0 +ellps=WGS84 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs'
 
   census_api_key(readLines('/nfs/rswanwick-data/rswanwick_census_api_key.txt')) 
   # This is done to not have the API key in your environment or scripts (good practice)
@@ -17,26 +23,28 @@ Get_Dasy_Data <- function(stid, ctyid){
   # Data QC: remove empty geometries from pop
   pop <- pop[!is.na(st_dimension(pop)), ]
   
-  #download land use data NEED TO MAKE SURE WE DON"T HAVE TO HAVE PROJECTIONS MATCHING BEFOREHAND
-  # Set an extraction data directory so that we don't have multiple tasks downloading to the same directory.
-  # Instead of using tempdir() use a temporary directory I created for the purpose. This might avoid permissions issues.
-  nlcd_download_path <- file.path('/nfs/rswanwick-data/DASY/temp_files', paste('nlcd', stid, ctyid, sep = '_'))
-  lu <- get_nlcd(template = pop, label = paste0(stid, ctyid),year = 2016, dataset = "Impervious", extraction.dir = nlcd_download_path)
+  # Project population to Albers equal-area
+  pop.projected <- st_transform(pop, crs = aea)
+  
+  # Update: use gdalwarp to extract the county area, from the NLCD impervious raster, already in Albers projection
+  # Use a temporary directory I created for the purpose to write the county polygon for extraction. 
+  nlcd_imp_vrt <- '/nfs/public-data/NLCD/VRTs/NLCD_2016_Impervious_L48_20190405.vrt'
+  temp_polygon_filename <- as.character(glue("/nfs/rswanwick-data/DASY/temp_files/county-{stid}-{ctyid}.gpkg"))
+  temp_nlcdraster_filename <- as.character(glue("/nfs/rswanwick-data/DASY/temp_files/countynlcd-{stid}-{ctyid}.tif"))
+  st_write(st_union(pop.projected), dsn = temp_polygon_filename, driver = 'GPKG')
+  gdalwarp(srcfile = nlcd_imp_vrt, dstfile = temp_nlcdraster_filename, cutline = temp_polygon_filename, crop_to_cutline = TRUE, tr = c(30, 30), dstnodata = "None")
+  lu <- raster(temp_nlcdraster_filename)
   
   #download 2010 block-level data, filter for only the blocks with 0 pop
   zero.pop <- get_decennial(geography = "block", variables = "P001001", 
                             year = 2010, state = stid, county = ctyid, 
-                            geometry = TRUE) %>% filter(value == 0) %>% st_transform(., proj4string(lu))
+                            geometry = TRUE) %>% filter(value == 0) %>% st_transform(., aea)
   
-  pop.projected <- st_transform(pop, crs = proj4string(lu))
-  ##crop lu to county
-  lu.crop <- crop(lu, pop.projected)
-  lu.mask <- mask(lu.crop, pop.projected)
-  #Remove NLCD data <=1%
-  lu.mask[lu.mask <= 1] <- NA
+   #Remove NLCD data <=1% (masking no longer necessary as it's already masked)
+  lu[lu <= 1] <- NA
   
   #create lu ratio
-  lu.ratio <- lu.mask/100
+  lu.ratio <- lu/100
   
   #mask out zero pop blocks
   lu.ratio.zp <- mask(lu.ratio, as(zero.pop, "Spatial"), inverse=TRUE)
@@ -45,9 +53,9 @@ Get_Dasy_Data <- function(stid, ctyid){
   # Now VRT is used.
   imp.surf.desc <- raster("/nfs/rswanwick-data/DASY/NLCD_2016_impervious.vrt")
   #mask out primary, secondary, and urban tertiary roads
-  imp.surf.crop <- raster::crop(imp.surf.desc, spTransform(as(pop.projected, "Spatial"), CRSobj = proj4string(imp.surf.desc))) #crop imp surface to county
+  imp.surf.crop <- raster::crop(imp.surf.desc, as(pop.projected, "Spatial")) #crop imp surface to county
   #plot(imp.surf.crop)
-  imp.surf.mask <- raster::mask(imp.surf.crop, spTransform(as(pop.projected, "Spatial"), CRSobj = proj4string(imp.surf.desc))) #mask all non-county values to NA
+  imp.surf.mask <- raster::mask(imp.surf.crop, as(pop.projected, "Spatial")) #mask all non-county values to NA
   
   # Correct for zero to one based indexing by adding 1 to the raster
   imp.surf.mask <- imp.surf.mask + 1
@@ -90,16 +98,17 @@ Get_Dasy_Data <- function(stid, ctyid){
 # Code to run full job on all counties
 # ====================================
 
-# Rewrite the parallel code so that no two counties from the same state are being run at the same time.
+# Code written so that no two counties from the same state are being run at the same time.
 # This will prevent two tasks from trying to access the same state-level files at the same time, which causes an error.
 
 # Load packages
 library(tidycensus)
-library(FedData) #has to be dev version or won't dl 2016 data
 library(tidyverse)
 library(raster)
 library(sf)
 library(glue)
+library(gdalUtils)
+library(rslurm)
 
 # Get the fips codes for all counties
 fipscodes = data_frame(fips_codes)
@@ -123,7 +132,8 @@ get_dasy_all_counties <- function(fips) {
 }
 
 sjob <- slurm_map(fips_list, get_dasy_all_counties, jobname = 'DASYallcounties',
-                  nodes = 2, cpus_per_node = 8, pkgs = c("tidycensus", "raster", "tidyverse", "FedData", "sf", "dplyr", "glue"),
+                  nodes = 8, cpus_per_node = 8, pkgs = c("tidycensus", "raster", "tidyverse", "sf", "dplyr", "glue", "gdalUtils"),
+                  global_objects = "Get_Dasy_Data",
                   submit = TRUE)
 
 # Get output after job is done. This is just for diagnostics. The actual files are written to /nfs/rswanwick-data/DASY/tifs/
@@ -135,8 +145,8 @@ cleanup_files(sjob)
 system2('rm', '-r /nfs/rswanwick-data/DASY/temp_files/*') 
 
 # Check which jobs did not run properly. This will be TRUE for all where the file was written as intended.
-fipscodes$tif_exists <- pmap_lgl(fipscodes, function(stid, ctyid) file.exists(as.character(glue("/nfs/rswanwick-data/DASY/tifs/neon-dasy-{stid}-{ctyid}.tif"))))
+tif_exists <- file.exists(as.character(glue("/nfs/rswanwick-data/DASY/tifs/neon-dasy-{fipscodes$stid}-{fipscodes$ctyid}.tif")))
 
 # Filter out the completed ones.
 fipscodes <- fipscodes %>%filter(!tif_exists)
-# Now run again starting at line 118, to retry the ones that didn't run previously.
+# Now run again starting at line 127 which will rerun the counties that didn't complete.
