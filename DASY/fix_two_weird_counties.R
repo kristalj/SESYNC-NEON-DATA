@@ -1,4 +1,5 @@
 # Fix issues with the three counties that did not run.
+# Updated 10 Dec 2020 to reflect new changes to Get_Dasy_Data.R
 
 bad_counties <- data.frame(stid = c('46','46','51'),
                            ctyid = c('102', '113', '515'))
@@ -34,10 +35,15 @@ pop <- get_acs(geography = "block group", variables = "B00001_001",
 
 # Data QC: remove empty geometries from pop
 pop <- pop[!is.na(st_dimension(pop)), ]
+pop.projected <- st_transform(pop, crs = aea)
 
 # Still use 46102 for NLCD (2016)
-nlcd_download_path <- file.path('/nfs/rswanwick-data/DASY/temp_files', paste('nlcd', stid, ctyid, sep = '_'))
-lu <- get_nlcd(template = pop, label = paste0(stid, ctyid),year = 2016, dataset = "Impervious", extraction.dir = nlcd_download_path)
+nlcd_imp_vrt <- '/nfs/public-data/NLCD/VRTs/NLCD_2016_Impervious_L48_20190405.vrt'
+temp_polygon_filename <- as.character(glue("/nfs/rswanwick-data/DASY/temp_files/county-{stid}-{ctyid}.gpkg"))
+temp_nlcdraster_filename <- as.character(glue("/nfs/rswanwick-data/DASY/temp_files/countynlcd-{stid}-{ctyid}.tif"))
+st_write(st_union(pop.projected), dsn = temp_polygon_filename, driver = 'GPKG')
+gdalwarp(srcfile = nlcd_imp_vrt, dstfile = temp_nlcdraster_filename, cutline = temp_polygon_filename, crop_to_cutline = TRUE, tr = c(30, 30), dstnodata = "None")
+lu <- raster(temp_nlcdraster_filename)
 
 #download 2010 block-level data, filter for only the blocks with 0 pop
 # Use OLD code
@@ -46,15 +52,11 @@ zero.pop <- get_decennial(geography = "block", variables = "P001001",
                           year = 2010, state = stid, county = ctyid, 
                           geometry = TRUE) %>% filter(value == 0) %>% st_transform(., proj4string(lu))
 
-pop.projected <- st_transform(pop, crs = proj4string(lu))
-##crop lu to county
-lu.crop <- crop(lu, pop.projected)
-lu.mask <- mask(lu.crop, pop.projected)
-#Remove NLCD data <=1%
-lu.mask[lu.mask <= 1] <- NA
+#Remove NLCD data <=1% (masking no longer necessary as it's already masked)
+lu[lu <= 1] <- NA
 
 #create lu ratio
-lu.ratio <- lu.mask/100
+lu.ratio <- lu/100
 
 #mask out zero pop blocks
 lu.ratio.zp <- mask(lu.ratio, as(zero.pop, "Spatial"), inverse=TRUE)
@@ -107,12 +109,17 @@ pop <- get_acs(geography = "block group", variables = "B00001_001",
 
 # Data QC: remove empty geometries from pop
 pop <- pop[!is.na(st_dimension(pop)), ]
+pop.projected <- st_transform(pop, crs = aea)
 
 #download land use data NEED TO MAKE SURE WE DON"T HAVE TO HAVE PROJECTIONS MATCHING BEFOREHAND
 # Set an extraction data directory so that we don't have multiple tasks downloading to the same directory.
 # Instead of using tempdir() use a temporary directory I created for the purpose. This might avoid permissions issues.
-nlcd_download_path <- file.path('/nfs/rswanwick-data/DASY/temp_files', paste('nlcd', stid, ctyid, sep = '_'))
-lu <- get_nlcd(template = pop, label = paste0(stid, ctyid),year = 2016, dataset = "Impervious", extraction.dir = nlcd_download_path)
+nlcd_imp_vrt <- '/nfs/public-data/NLCD/VRTs/NLCD_2016_Impervious_L48_20190405.vrt'
+temp_polygon_filename <- as.character(glue("/nfs/rswanwick-data/DASY/temp_files/county-{stid}-{ctyid}.gpkg"))
+temp_nlcdraster_filename <- as.character(glue("/nfs/rswanwick-data/DASY/temp_files/countynlcd-{stid}-{ctyid}.tif"))
+st_write(st_union(pop.projected), dsn = temp_polygon_filename, driver = 'GPKG')
+gdalwarp(srcfile = nlcd_imp_vrt, dstfile = temp_nlcdraster_filename, cutline = temp_polygon_filename, crop_to_cutline = TRUE, tr = c(30, 30), dstnodata = "None")
+lu <- raster(temp_nlcdraster_filename)
 
 #download 2010 block-level data, filter for only the blocks with 0 pop
 # We need to get both the city and county and merge them.
@@ -132,15 +139,11 @@ ggplot() +
 
 zero.pop <- bind_rows(zero.pop.bedfordcity, zero.pop.bedfordcounty)
 
-pop.projected <- st_transform(pop, crs = proj4string(lu))
-##crop lu to county
-lu.crop <- crop(lu, pop.projected)
-lu.mask <- mask(lu.crop, pop.projected)
-#Remove NLCD data <=1%
-lu.mask[lu.mask <= 1] <- NA
+#Remove NLCD data <=1% (masking no longer necessary as it's already masked)
+lu[lu <= 1] <- NA
 
 #create lu ratio
-lu.ratio <- lu.mask/100
+lu.ratio <- lu/100
 
 #mask out zero pop blocks
 lu.ratio.zp <- mask(lu.ratio, as(zero.pop, "Spatial"), inverse=TRUE)
