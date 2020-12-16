@@ -123,6 +123,9 @@ fipscodes = fipscodes %>%
 not48 <- c('02','15','60','66','69','72','74','78')
 fipscodes <- filter(fipscodes, !stid %in% not48)
 
+# Remove Shannon County, South Dakota (46113) from the list because it does not exist in 2016 (replaced by 46102, Oglala Lakota County)
+fipscodes <- filter(fipscodes, !(stid == '46' & ctyid == '113'))
+
 # Split into a list by state.
 fips_list <- fipscodes %>% group_by(stid) %>% group_split
 
@@ -149,4 +152,4 @@ tif_exists <- file.exists(as.character(glue("/nfs/rswanwick-data/DASY/tifs/neon-
 
 # Filter out the completed ones.
 fipscodes <- fipscodes %>%filter(!tif_exists)
-# Now run again starting at line 127 which will rerun the counties that didn't complete.
+# Now run again starting at line 129 which will rerun the counties that didn't complete.
