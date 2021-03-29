@@ -16,7 +16,7 @@ Get_Dasy_Data <- function(stid, ctyid){
   census_api_key(readLines('/nfs/rswanwick-data/rswanwick_census_api_key.txt')) 
   # This is done to not have the API key in your environment or scripts (good practice)
 
-  pop <- get_acs(geography = "block group", variables = "B00001_001", 
+  pop <- get_acs(geography = "block group", variables = "B01003_001", 
                  year = 2016, state= stid, county = ctyid, 
                  geometry = TRUE)   
   
