@@ -29,7 +29,7 @@ fips_codes %>% filter(paste(state_code, county_code) %in% paste(bad_counties$sti
 # 2016 data is new code.
 stid <- "46"
 ctyid <- "102"
-pop <- get_acs(geography = "block group", variables = "B00001_001", 
+pop <- get_acs(geography = "block group", variables = "B01003_001", 
                year = 2016, state= stid, county = ctyid, 
                geometry = TRUE)   
 
@@ -103,7 +103,7 @@ writeRaster(dasy.pop, my_filename, overwrite = TRUE) # Will overwrite existing f
 # Only one code used for 2016
 stid <- "51"
 ctyid <- "019"
-pop <- get_acs(geography = "block group", variables = "B00001_001", 
+pop <- get_acs(geography = "block group", variables = "B01003_001", 
                year = 2016, state= stid, county = ctyid, 
                geometry = TRUE)   
 
