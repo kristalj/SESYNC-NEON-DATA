@@ -33,6 +33,8 @@ pop <- get_acs(geography = "block group", variables = "B01003_001",
                year = 2016, state= stid, county = ctyid, 
                geometry = TRUE)   
 
+aea <- '+proj=aea +lat_1=29.5 +lat_2=45.5 +lat_0=23 +lon_0=-96 +x_0=0 +y_0=0 +ellps=WGS84 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs'
+
 # Data QC: remove empty geometries from pop
 pop <- pop[!is.na(st_dimension(pop)), ]
 pop.projected <- st_transform(pop, crs = aea)
