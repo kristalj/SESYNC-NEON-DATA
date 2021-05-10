@@ -1,0 +1,261 @@
+---
+title: "Compare DASY with Facebook"
+author: "Quentin D. Read"
+date: "5/10/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Summary
+
+We are interested in whether our dasymetric map adds value to existing data. Facebook(TM) created a similar data product, not using their data but using some kind of imagery. A vague description of the method seems to suggest that it's similar to the one we used. I wanted to visualize any discrepancy between Facebook's data and ours.
+
+Note the bash scripts in here are not run when the notebook is created, I just include them here for later reproducibility. Only the plotting and data comparison in R is run when the notebook is created.
+
+## Download and ready the Facebook data
+
+The data are hosted at a page on [data.humdata.org](# https://data.humdata.org/dataset/united-states-high-resolution-population-density-maps-demographic-estimates).
+This code  downloads all the data. I put the URLs of all the map tiles in a text file. This bash script loops through the files and downloads them all, then unzips them. I put them in a folder called `/nfs/public-data/Facebook_pop_density` so they can be accessed by anyone on the SESYNC server.
+
+```{bash, eval = FALSE}
+urls="/nfs/qread-data/temp/fbpopfileurls.txt"
+direc="/nfs/qread-data/raw_data/facebookpop"
+
+# Download
+while read url; do
+  echo "$url"
+  wget -P $direc $url
+done < $urls
+
+# Unzip
+for file in $direc/*.zip; do
+  unzip $file
+done
+```
+
+A virtual raster (.vrt) file is already provided in the directory with all the tiles mosaicked together.
+
+## Example: Anne Arundel County
+
+Unfortunately our dasymetric map is not the most recent, being based on a combination of 2010 and 2016 data. The facebook map purports to be 2019 population but I haven't yet figured out the datasets they are using to get that. But some discrepancies between the two maps might come from discrepancies in the two time points.
+
+We will use GDAL to crop the virtual raster for the entire country to just AA county boundaries so we can read in all its pixel values easily. First create a temporary file of AA county boundaries from the full USA county boundaries shapefile. Also transform it to the unprojected CRS of the facebook raster. 
+
+```{bash, eval = FALSE}
+ogr2ogr -overwrite -where fips="24003" /nfs/qread-data/temp/aacounty.gpkg /nfs/qread-data/raw_data/landuse/USA/USA_county_2014_aea.gpkg
+raster_proj=`gdalsrsinfo $direc/population_usa_2019-07-01.vrt -o proj4 | xargs`
+ogr2ogr -overwrite -f "GPKG" -t_srs "${raster_proj}" /nfs/qread-data/temp/aacountylonglat.gpkg /nfs/qread-data/temp/aacounty.gpkg
+```
+
+Now crop the virtual raster to AA county boundaries (code not run in notebook). 
+
+```{bash, eval = FALSE}
+gdalwarp /nfs/qread-data/raw_data/facebookpop/population_usa_2019-07-01.vrt /nfs/qread-data/temp/aa_pop_fb_longlat.tif \
+  -overwrite -crop_to_cutline -cutline /nfs/qread-data/temp/aacountylonglat.gpkg
+gdalwarp /nfs/rswanwick-data/DASY/tifs/neon-dasy-24-003.tif /nfs/qread-data/temp/aa_pop_dasy.tif \
+  -tr 30 30 -overwrite -crop_to_cutline -cutline /nfs/qread-data/temp/aacountylonglat.gpkg
+```
+
+At first, I tried to tell the difference between the two rasters by projecting the Facebook raster (which is long-lat and not equal area) to the equal area projection of the dasymetric raster, and then pixel-wise subtracting one raster from the other. This turned out to be problematic because the reprojection unavoidably causes a pretty big error, changing the total population gotten from the pixel sums by about 100,000. So instead, I decided to just plot both of them next to each other to see what they both look like, for the "eyeball test," then extract a large number of point values from each of the rasters on an even grid. We can look at what discrepancies there are between those point values.
+
+From now on the code is in R and is run when the notebook is rendered.
+
+### Load the data into R
+
+```{r load data, message = FALSE, warning = FALSE}
+library(stars)
+library(sf)
+library(dplyr)
+library(purrr)
+library(ggplot2)
+
+theme_set(theme_bw())
+
+aadasy <- read_stars('/nfs/qread-data/temp/aa_pop_dasy.tif')
+aafb <- read_stars('/nfs/qread-data/temp/aa_pop_fb_longlat.tif')
+aabounds <- st_read('/nfs/qread-data/temp/aacounty.gpkg')
+aabounds_longlat <- st_read('/nfs/qread-data/temp/aacountylonglat.gpkg')
+```
+
+### Inspect data
+
+Look at projection info. The Facebook raster is still in unprojected coordinates.
+
+```{r projections}
+st_crs(aadasy)$proj4string
+st_crs(aafb)$proj4string
+st_crs(aabounds)$proj4string
+```
+
+What are the total populations for each raster?
+
+```{r totals}
+map(aadasy, sum, na.rm = TRUE)
+
+map(aafb, sum, na.rm = TRUE)
+```
+
+The dasymetric map has a slightly higher sum which is strange because the Facebook map is supposed to be based on a few years later and the county population should be growing. But they are pretty close.
+
+Now for the eyeball test: look at a plot of each raster.
+
+```{r initial plot}
+fill_scale <- scale_fill_viridis_c(na.value = 'transparent', name = 'population')
+
+ggplot() +
+  geom_stars(data = aadasy) +
+  geom_sf(data = st_geometry(aabounds), fill = NA) +
+  theme(legend.position = 'bottom') +
+  fill_scale +
+  ggtitle('our dasymetric map')
+
+ggplot() +
+  geom_stars(data = aafb) +
+  geom_sf(data = st_geometry(aabounds_longlat), fill = NA) +
+  theme(legend.position = 'bottom') +
+  fill_scale +
+  ggtitle('facebook dasymetric map')
+```
+
+The dasymetric raster looks like it has denser coverage of non-missing pixels. The Facebook raster has some pixels with much higher population values, I suppose because the same number of people are represented as being squeezed into fewer pixels. Overall, though, it's fairly hard to do any kind of meaningful "eyeball test" from these maps because so many of the pixels have very low values and most of the population is clustered into a few high-value pixels sparsely scattered around.
+
+### Systematically compare the two estimates
+
+Now, to sample each raster at the same grid points, we generate an even 500-m grid over AA county and trim it to the bounds of the county. We get a bit less than 5000 points to compare. Only some of these points will end up having data once we do the extraction.
+
+```{r grid}
+aagrid <- st_make_grid(aabounds, cellsize = 500, what = 'centers')
+aagrid <- aagrid[aabounds]
+
+ggplot() + 
+  geom_sf(data = aabounds, fill = NA) + 
+  geom_sf(data = aagrid, size = 0.2)
+```
+
+Extract the values from both rasters at each point. Points need to be transformed to lat-long to extract from the Facebook raster. 
+
+```{r extract values}
+aadasy_points <- aggregate(aadasy, aagrid, function(x) x[1], as_points = FALSE) %>%
+  st_as_sf %>%
+  rename(pop_dasy = aa_pop_dasy.tif)
+
+aagrid_longlat <- st_transform(aagrid, st_crs(aafb))
+
+aafb_points <- aggregate(aafb, aagrid_longlat, function(x) x[1], as_points = FALSE) %>%
+  st_as_sf %>%
+  st_transform(st_crs(aadasy_points)) %>%
+  rename(pop_fb = aa_pop_fb_longlat.tif)
+```
+
+How many non-missing points do we have for both rasters and how many of these overlap?
+
+```{r nonmissing counts}
+sum(!is.na(aadasy_points$pop_dasy))
+sum(!is.na(aafb_points$pop_fb))
+sum(!is.na(aadasy_points$pop_dasy) & !is.na(aafb_points$pop_fb))
+```
+
+About 400 overlap, which is plenty to compare.
+
+Make maps of the extracted values. Put the two color scales into the same range so that we can more easily compare (do this by finding the min and max of each raster's values).
+
+```{r map extracted values}
+scale_range <- ceiling(range(c(aadasy_points$pop_dasy, aafb_points$pop_fb), na.rm = TRUE))
+
+color_scale <- scale_color_viridis_c(name = 'population', limits = scale_range)
+
+ggplot() + 
+  geom_sf(data = aabounds, fill = NA) + 
+  geom_sf(data = aadasy_points %>% filter(!is.na(pop_dasy)), aes(color = pop_dasy), size = 0.8) +
+  color_scale +
+  ggtitle('our dasymetric map') +
+  theme(legend.position = 'bottom')
+
+ggplot() + 
+  geom_sf(data = aabounds, fill = NA) + 
+  geom_sf(data = aafb_points %>% filter(!is.na(pop_fb)), aes(color = pop_fb), size = 0.8) +
+  color_scale +
+  ggtitle('facebook dasymetric map') +
+  theme(legend.position = 'bottom')
+```
+
+The two population rasters are still incomparable because the pixel size for the Facebook raster is not quite the same as the dasymetric raster, and the units are total population in each pixel. We need to find the pixel sizes of the Facebook raster in square meters and then correct the population values for the Facebook raster by multiplying them by the ratio of pixel sizes between the two rasters.
+
+Pixel height is constant across grid, pixel width varies with latitude. However the pixel width varies by less than 1% over the latitude range of AA county as you can see below. 
+
+```{r check latitude effect}
+width_factors <- cos(st_bbox(aafb)[c('ymin', 'ymax')] * 2*pi/360)
+width_factors[2] / width_factors[1]
+```
+
+But let's still make sure we correct for it properly because it's good to do things right. The `delta` is the same for both directions. The correction ends up multiplying the Facebook values by a factor of around 1.2.
+
+```{r}
+delta <- attr(aafb, 'dimensions')[['x']][['delta']]
+
+R <- 6378137 # Earth's radius in m.
+pixel_height <- delta * R * pi/2 / 90
+pixel_width <- cos(st_coordinates(aagrid_longlat)[, 'Y'] * 2*pi/360) * pixel_height
+
+aafb_points <- aafb_points %>%
+  mutate(pixel_area = pixel_height * pixel_width,
+         pop_fb_corrected = pop_fb * (30^2) / pixel_area)
+```
+
+### Final comparison plots
+
+Now we can take the difference in population densities between the two rasters and plot. Here I show a scatterplot with the 1:1 line for reference, which shows there is a wide discrepancy between estimates. The density plot shows the distribution of differences with a reference line at zero.
+The majority have a negative value (Facebook's estimate is higher at most pixels).
+
+```{r difference and plot}
+aadasy_points <- aadasy_points %>%
+  mutate(pop_fb_corrected = aafb_points$pop_fb_corrected,
+         pop_diff = pop_dasy - pop_fb_corrected)
+
+ggplot(aadasy_points, aes(x = pop_dasy, y = pop_fb_corrected)) +
+  geom_point() +
+  geom_abline(slope = 1, linetype = 'dashed', size = 1, color = 'slateblue') +
+  theme(aspect.ratio = 1) +
+  labs(x = 'our dasymetric', y = 'facebook dasymetric')
+
+ggplot(aadasy_points, aes(x = pop_dasy - aafb_points$pop_fb_corrected)) +
+  geom_density() +
+  geom_vline(xintercept = 0, linetype = 'dashed', color = 'slateblue') +
+  labs(x = 'our dasymetric - facebook dasymetric')
+```
+
+Let's map the locations where the differences are positive versus negative and see if there is any pattern in where our values are higher (positive difference, blue points) versus Facebook's (negative difference, red points). I also plot the location of cities for reference.
+
+```{r map the differences}
+data(us.cities, package = 'maps')
+
+us.cities <- us.cities %>% 
+  st_as_sf(coords = c('long', 'lat'), crs = 4326)
+
+aacity <- st_join(us.cities, aabounds_longlat, left = FALSE) %>%
+  mutate(name = gsub(' MD', '', name))
+
+ggplot() + 
+  geom_sf(data = aabounds, fill = NA) + 
+  geom_sf(data = aadasy_points %>% filter(!is.na(pop_diff)), aes(color = pop_diff > 0), size = 0.8) +
+  geom_sf(data = aacity, size = 3, alpha = 0.5) +
+  geom_sf_text(data = aacity, aes(label = name), vjust = -1, size = 4, fontface = 'bold') +
+  scale_color_manual(values = c('indianred', 'slateblue')) +
+  ggtitle('population estimate differences') +
+  theme(legend.position = 'bottom')
+```
+
+To my eye, it looks like the areas where our estimates are higher are concentrated in the cities/towns of Anne Arundel county.
+
+## Conclusion
+
+In summary, these two estimates have a lot of differences. There are three main possible reasons I could think of.
+
+- **One or both of them is wrong.** Hopefully this isn't the case and there is not too much to do about it anyway because we don't have access to the "true" values.
+- **Different algorithms used to produce the two maps.** This is likely to be the case but I need to do some digging to find what method Facebook used.
+- **Different input data.** Our estimate uses a combination of 2010 and 2016 data while Facebook's is supposedly for 2019. So that would explain a bit of the discrepancy. But also related to the above point, the two algorithms might use completely different kinds of input data so again I'd have to dig and find that out.
+
+Later I will do this for multiple counties in different parts of the country to see whether there are systematic differences in the discrepancies between our dataset and Facebook's. For example the error might be systematically higher in urban areas, or rural. I have no idea.
