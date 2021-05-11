@@ -182,28 +182,7 @@ ggplot() +
   theme(legend.position = 'bottom')
 ```
 
-The two population rasters are still incomparable because the pixel size for the Facebook raster is not quite the same as the dasymetric raster, and the units are total population in each pixel. We need to find the pixel sizes of the Facebook raster in square meters and then correct the population values for the Facebook raster by multiplying them by the ratio of pixel sizes between the two rasters.
-
-Pixel height is constant across grid, pixel width varies with latitude. However the pixel width varies by less than 1% over the latitude range of AA county as you can see below. 
-
-```{r check latitude effect}
-width_factors <- cos(st_bbox(aafb)[c('ymin', 'ymax')] * 2*pi/360)
-width_factors[2] / width_factors[1]
-```
-
-But let's still make sure we correct for it properly because it's good to do things right. The `delta` is the same for both directions. The correction ends up multiplying the Facebook values by a factor of around 1.2.
-
-```{r}
-delta <- attr(aafb, 'dimensions')[['x']][['delta']]
-
-R <- 6378137 # Earth's radius in m.
-pixel_height <- delta * R * pi/2 / 90
-pixel_width <- cos(st_coordinates(aagrid_longlat)[, 'Y'] * 2*pi/360) * pixel_height
-
-aafb_points <- aafb_points %>%
-  mutate(pixel_area = pixel_height * pixel_width,
-         pop_fb_corrected = pop_fb * (30^2) / pixel_area)
-```
+At this point in a previous version of this document I did a correction for unequal pixel sizes but after further reflection I decided that it was not necessary and only made things worse. So I've taken it out. But it is important to note that there is a possible additional reason for a discrepancy between the values: the projected equal-area dasymetric raster has pixel sizes of 30x30 m while the lat-long unprojected raster Facebook produced has approximately 31x24 m pixels (that's about 83% the area). 
 
 ### Final comparison plots
 
@@ -212,16 +191,16 @@ The majority have a negative value (Facebook's estimate is higher at most pixels
 
 ```{r difference and plot}
 aadasy_points <- aadasy_points %>%
-  mutate(pop_fb_corrected = aafb_points$pop_fb_corrected,
-         pop_diff = pop_dasy - pop_fb_corrected)
+  mutate(pop_fb = aafb_points$pop_fb,
+         pop_diff = pop_dasy - pop_fb)
 
-ggplot(aadasy_points, aes(x = pop_dasy, y = pop_fb_corrected)) +
+ggplot(aadasy_points, aes(x = pop_dasy, y = pop_fb)) +
   geom_point() +
   geom_abline(slope = 1, linetype = 'dashed', size = 1, color = 'slateblue') +
   theme(aspect.ratio = 1) +
   labs(x = 'our dasymetric', y = 'facebook dasymetric')
 
-ggplot(aadasy_points, aes(x = pop_dasy - aafb_points$pop_fb_corrected)) +
+ggplot(aadasy_points, aes(x = pop_dasy - aafb_points$pop_fb)) +
   geom_density() +
   geom_vline(xintercept = 0, linetype = 'dashed', color = 'slateblue') +
   labs(x = 'our dasymetric - facebook dasymetric')
@@ -248,7 +227,80 @@ ggplot() +
   theme(legend.position = 'bottom')
 ```
 
-To my eye, it looks like the areas where our estimates are higher are concentrated in the cities/towns of Anne Arundel county.
+At first it looked to me like the areas where our estimates are higher are concentrated in the cities/towns of Anne Arundel County but maybe there is no such pattern?
+
+## Aggregating back up to block group
+
+To further compare, let's sum up the population rasters by block group. Ours is based on the ACS 2016 census block group population estimates so if we aggregate our raster by that geometry it should give identical population totals to the block groups. The Facebook one should equal the 2019 estimates.
+
+Use `tidycensus` to get the population estimates.
+
+```{r}
+library(tidycensus)
+
+census_api_key(readLines('~/censusapikey.txt'))
+
+aapop2016 <- get_acs(geography = "block group", variables = "B01003_001", 
+                     year = 2016, state = '24', county = '003', 
+                     geometry = TRUE)   
+
+aapop2019 <- get_acs(geography = "block group", variables = "B01003_001", 
+                     year = 2019, state = '24', county = '003', 
+                     geometry = TRUE)   
+
+aapop2016_proj <- st_transform(aapop2016, st_crs(aadasy))
+aapop2019_proj <- st_transform(aapop2019, st_crs(aafb))
+
+```
+
+Aggregate the rasters by blockgroup polygon.
+
+```{r}
+aadasy_block <- aggregate(aadasy, aapop2016_proj, sum, na.rm = TRUE) %>%
+  st_as_sf
+
+aafb_block <-aggregate(aafb, aapop2019_proj, sum, na.rm = TRUE) %>%
+  st_as_sf
+
+aapop2016 <- aapop2016 %>%
+  mutate(pop_dasy = aadasy_block$aa_pop_dasy.tif)
+
+aapop2019 <- aapop2019 %>%
+  mutate(pop_fb = aafb_block$aa_pop_fb_longlat.tif)
+```
+How do they compare? Ours reproduces the block group populations exactly, as expected.
+
+```{r}
+ggplot(aapop2016, aes(x = estimate, y = pop_dasy)) +
+  geom_point() +
+  geom_abline(slope = 1, linetype = 'dashed', color = 'slateblue') +
+  labs(x = 'ACS 2016 estimate', y = 'our map aggregated') +
+  theme(aspect.ratio = 1)
+```
+
+The Facebook map does not so it must be based on different input data. But given that the Census data itself is also an estimate, this doesn't necessarily mean the Facebook estimate is "wrong." It may be closer to the truth after all.
+
+```{r}
+ggplot(aapop2019, aes(x = estimate, y = pop_fb)) +
+  geom_point() +
+  geom_abline(slope = 1, linetype = 'dashed', color = 'slateblue') +
+  labs(x = 'ACS 2019 estimate', y = 'FB map aggregated') +
+  theme(aspect.ratio = 1)
+```
+
+Make a map showing the deviation between Facebook estimates and Census 2019 estimates. Somehow the facebook population greatly underestimates a block group north of Pasadena which has ~8000 people but is only estimated to have ~3000 by facebook.
+
+```{r}
+aapop2019 <- mutate(aapop2019, pop_diff = estimate - pop_fb)
+
+ggplot(aapop2019) +
+  geom_sf(aes(fill = pop_diff)) +
+  geom_sf_text(data = aacity, aes(label = name), size = 4, fontface = 'bold') +
+  scico::scale_fill_scico(palette = 'vik', begin = 0.4, end = 1, 
+                          name = 'census pop - facebook pop', breaks = c(0, 2500, 5000)) +
+  theme(legend.position = 'bottom')
+```
+
 
 ## Conclusion
 
@@ -256,6 +308,14 @@ In summary, these two estimates have a lot of differences. There are three main 
 
 - **One or both of them is wrong.** Hopefully this isn't the case and there is not too much to do about it anyway because we don't have access to the "true" values.
 - **Different algorithms used to produce the two maps.** This is likely to be the case but I need to do some digging to find what method Facebook used.
-- **Different input data.** Our estimate uses a combination of 2010 and 2016 data while Facebook's is supposedly for 2019. So that would explain a bit of the discrepancy. But also related to the above point, the two algorithms might use completely different kinds of input data so again I'd have to dig and find that out.
+- **Different input data.** Our estimate uses a combination of 2010 and 2016 data while Facebook's is supposedly for 2019. So that would explain a bit of the discrepancy. But also related to the above point, the two algorithms might use completely different kinds of input data so again I'd have to dig and find that out. As we can see from the block group aggregation, our estimate is constrained to give the census population totals by block group while Facebook's is not. So likely Facebook does not use that dataset to produce their estimates.
 
 Later I will do this for multiple counties in different parts of the country to see whether there are systematic differences in the discrepancies between our dataset and Facebook's. For example the error might be systematically higher in urban areas, or rural. I have no idea.
+
+## References
+
+Kelly did some digging and found a couple of papers that may give some hints about the method Facebook is using. Here are links to them:
+
+- [preprint on arXiv describing the building detection algorithm](https://arxiv.org/abs/1712.05839)
+- [Nat Comms paper which uses the data and describes the method briefly](https://www.nature.com/articles/s41467-019-09282-y)
+- [paper on dasymetric mapping using addresses](https://onlinelibrary.wiley.com/doi/abs/10.1111/j.1467-9671.2011.01270.x) - this is a bit of a different method but may be useful reading.
