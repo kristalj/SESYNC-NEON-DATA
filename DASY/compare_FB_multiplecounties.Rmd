@@ -1,0 +1,305 @@
+---
+title: "Compare DASY with Facebook"
+author: "Quentin D. Read"
+date: "5/10/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Summary
+
+We are interested in whether our dasymetric map adds value to existing data. Facebook(TM) created a similar data product, not using their data but using some kind of imagery. A vague description of the method seems to suggest that it's similar to the one we used. I wanted to visualize any discrepancy between Facebook's data and ours.
+
+Note the bash scripts in here are not run when the notebook is created, I just include them here for later reproducibility. Only the plotting and data comparison in R is run when the notebook is created.
+
+## Download and ready the Facebook data
+
+The data are hosted at a page on [data.humdata.org](# https://data.humdata.org/dataset/united-states-high-resolution-population-density-maps-demographic-estimates).
+This code  downloads all the data. I put the URLs of all the map tiles in a text file. This bash script loops through the files and downloads them all, then unzips them. I put them in a folder called `/nfs/public-data/Facebook_pop_density` so they can be accessed by anyone on the SESYNC server.
+
+```{bash, eval = FALSE}
+urls="/nfs/qread-data/temp/fbpopfileurls.txt"
+direc="/nfs/qread-data/raw_data/facebookpop"
+
+# Download
+while read url; do
+  echo "$url"
+  wget -P $direc $url
+done < $urls
+
+# Unzip
+for file in $direc/*.zip; do
+  unzip $file
+done
+```
+
+A virtual raster (.vrt) file is already provided in the directory with all the tiles mosaicked together.
+
+## Case studies on multiple counties
+
+I decided to repeat the Anne Arundel county comparison on a few different counties in the USA, with different characteristics, trying to represent some large urban, small urban, large rural, and small rural counties spread around the country. I added 10 more counties in addition to AA county. We can modify this list later.
+
+```{r}
+countycodes <- read.csv('/nfs/qread-data/DASY/countycodesforfb.csv', colClasses = rep('character', 3))
+
+knitr::kable(countycodes)
+```
+
+Use GDAL to crop the virtual raster for the entire country to each county's boundaries so we can read in all the pixel values easily. First create temporary files of county boundaries from the full USA county boundaries shapefile. Also transform to the unprojected CRS of the facebook raster. 
+
+Note that there is an issue with leading zeroes in the fips code requiring some additional quoting of the strings.
+
+```{bash, eval = FALSE}
+datapath="/nfs/qread-data/raw_data/facebookpop"
+gpkgpath="/nfs/qread-data/DASY/countybounds"
+raster_proj=`gdalsrsinfo $datapath/population_usa_2019-07-01.vrt -o proj4 | xargs`
+# Iterate through the county codes and perform operation each time. Skip first line with extra "read"
+{
+  read
+  while IFS=, read -r county state fips; do 
+    echo "Processing $county County, $state. FIPS $fips"; 
+    ogr2ogr -overwrite -f "GPKG" -where "fips=\"${fips}\"" ${gpkgpath}/county${fips}.gpkg /nfs/qread-data/raw_data/landuse/USA/USA_county_2014_aea.gpkg
+    ogr2ogr -overwrite -f "GPKG" -t_srs "${raster_proj}" ${gpkgpath}/county${fips}longlat.gpkg ${gpkgpath}/county${fips}.gpkg
+  done 
+} < /nfs/qread-data/DASY/countycodesforfb.csv
+```
+
+Copy the tifs from Rachel S directory to QDR directory due to ongoing issue with permissions.
+
+```{bash, eval = FALSE}
+sudo -i
+tifpath="/nfs/qread-data/DASY/countyrasters"
+{
+  read
+  while IFS=, read -r county state fips; do 
+  statefips=`echo $fips | cut -c 1-2`
+  countyfips=`echo $fips | cut -c 3-5`
+  cp /nfs/rswanwick-data/DASY/tifs/neon-dasy-${statefips}-${countyfips}.tif /tmp
+  done
+} < /tmp/countycodesforfb.csv
+```
+
+
+Now crop the virtual raster to each county's boundaries. Parse the FIPS name into the two substrings to get the right DASY tif.
+
+```{bash, eval = FALSE}
+tifpath="/nfs/qread-data/DASY/countyrasters"
+{
+  read
+  while IFS=, read -r county state fips; do 
+    echo "Processing $county County, $state. FIPS $fips"; 
+    
+    statefips=`echo $fips | cut -c 1-2`
+    countyfips=`echo $fips | cut -c 3-5`
+    
+    gdalwarp ${datapath}/population_usa_2019-07-01.vrt ${tifpath}/county${fips}_fblonglat.tif \
+     -overwrite -crop_to_cutline -cutline ${gpkgpath}/county${fips}longlat.gpkg
+    gdalwarp /tmp/neon-dasy-${statefips}-${countyfips}.tif ${tifpath}/county${fips}_dasy.tif \
+     -tr 30 30 -overwrite -crop_to_cutline -cutline ${gpkgpath}/county${fips}longlat.gpkg
+  done 
+} < /nfs/qread-data/DASY/countycodesforfb.csv
+```
+
+From now on the code is in R and is run when the notebook is rendered.
+
+### Load the data into R
+
+```{r load data, message=FALSE, warning=FALSE, results = 'hide'}
+library(stars)
+library(sf)
+library(dplyr)
+library(purrr)
+library(ggplot2)
+library(glue)
+library(grid)
+library(gridExtra)
+
+theme_set(theme_bw())
+
+fb_rasters <- map(countycodes$FIPS, ~ read_stars(glue('/nfs/qread-data/DASY/countyrasters/county{.x}_fblonglat.tif')))
+dasy_rasters <- map(countycodes$FIPS, ~ read_stars(glue('/nfs/qread-data/DASY/countyrasters/county{.x}_dasy.tif')))
+
+countybounds <- map(countycodes$FIPS, ~ st_read(glue('/nfs/qread-data/DASY/countybounds/county{.x}.gpkg')))
+countybounds_longlat <- map(countycodes$FIPS, ~ st_read(glue('/nfs/qread-data/DASY/countybounds/county{.x}longlat.gpkg')))
+```
+
+### Inspect data
+
+Here's a map of the counties we'll extract.
+
+```{r county map}
+countybounds_df <- do.call(rbind, countybounds) %>%
+  left_join(countycodes, by = c('fips' = 'FIPS'))
+
+allcounties <- st_read('/nfs/qread-data/raw_data/landuse/USA/USA_county_2014_aea.gpkg')
+
+ggplot() +
+  geom_sf(data = st_geometry(allcounties %>% filter(!fips_state %in% c('02', '15'))), fill = NA, size = 0.25) +
+  geom_sf(data = st_geometry(countybounds_df), fill = 'indianred3') +
+  geom_sf_label(aes(label = glue('{county_name}, {state_name}')), data = countybounds_df, nudge_y = -100000, alpha = 0.6)
+  
+```
+
+
+What are the total populations for the dasymetric and facebook rasters for each of the counties? Below, positive difference means the facebook estimate is greater. So our dasymetric is greater for many of them. Since our dasymetric estimate equals the total from the Census ACS estimate it's surprising that facebook's estimate is 20% lower than the Census estimate for Los Angeles County -- that's almost 2 million people!
+
+```{r totals}
+countypop <- countycodes %>%
+  select(-FIPS) %>%
+  mutate(dasypop = round(map_dbl(dasy_rasters, ~ map(., sum, na.rm = TRUE)[[1]])),
+         fbpop = round(map_dbl(fb_rasters, ~ map(., sum, na.rm = TRUE)[[1]])),
+         relative_diff = round(1 - dasypop/fbpop, 2))
+
+knitr::kable(countypop)
+```
+
+Let's make plots of the ones with the highest discrepancies. Durham NC, Los Angeles CA, and Quitman MS are the counties where our dasymetric map is the highest estimate relative to facebook.
+
+```{r initial plot, fig.width = 7}
+fill_scale <- scale_fill_viridis_c(na.value = 'transparent', name = 'population')
+
+make_plot_col <- function(dasy, fb, county, countylonglat, title) {
+  dasyplot <- ggplot() +
+    geom_stars(data = dasy) +
+    geom_sf(data = st_geometry(county), fill = NA) +
+    theme(legend.position = 'bottom') +
+    fill_scale +
+    ggtitle(glue('{title}: ours'))
+  
+  fbplot <- ggplot() +
+    geom_stars(data = fb) +
+    geom_sf(data = st_geometry(countylonglat), fill = NA) +
+    theme(legend.position = 'bottom') +
+    fill_scale +
+    ggtitle(glue('{title}: fb'))
+  
+  cbind(ggplotGrob(dasyplot), ggplotGrob(fbplot))
+}
+
+plot_cols <- tibble(dasy = dasy_rasters, fb = fb_rasters, county = countybounds, countylonglat = countybounds_longlat, title = glue('{countycodes$county_name}, {countycodes$state_name}'))[c(2, 3, 11), ] %>%
+  pmap(make_plot_col)
+
+grid.draw(plot_cols[[1]])
+```
+
+```{r, fig.width = 7}
+grid.draw(plot_cols[[2]])
+```
+
+```{r, fig.width = 7}
+grid.draw(plot_cols[[3]])
+```
+
+### Systematically compare the two estimates
+
+Now, to sample each raster at the same grid points, we generate an even 250-m grid over each of the counties and trim it to the bounds of the county. Only some of these points will end up having data once we do the extraction.
+
+```{r grid, eval = FALSE}
+make_county_grid <- function(county, size = 250) {
+  cogrid <- st_make_grid(county, cellsize = size, what = 'centers')
+  cogrid[county]
+}
+
+countygrids <- map(countybounds, make_county_grid)
+```
+
+Extract the values from both rasters at each point. Points need to be transformed to lat-long to extract from the Facebook raster. This operation takes some time so I sent it to rslurm. Don't run this as the notebook is created for that reason (instead save the results and load them to plot).
+
+```{r extract values, eval = FALSE}
+get_points <- function(dasy, fb, grid) {
+  dasy_points <- aggregate(dasy, grid, function(x) x[1], as_points = FALSE) %>%
+    st_as_sf
+
+  grid_longlat <- st_transform(grid, st_crs(fb))
+  
+  fb_points <- aggregate(fb, grid_longlat, function(x) x[1], as_points = FALSE) %>%
+    st_as_sf %>%
+    st_transform(st_crs(dasy_points))
+  
+  st_sf(pop_dasy = dasy_points[[1]], pop_fb = fb_points[[1]], geometry = grid) %>%
+    mutate(pop_diff = pop_dasy - pop_fb)
+
+}
+
+library(rslurm)
+
+sjob <- slurm_apply(get_points, tibble(dasy = dasy_rasters, fb = fb_rasters, grid = countygrids),
+                    jobname = 'dasypts', nodes = 3, cpus_per_node = 4)
+
+pop_points <- get_slurm_out(sjob)
+cleanup_files(sjob)
+
+saveRDS(pop_points, '/nfs/qread-data/DASY/pop_points.rds')
+```
+
+Manipulate the result to get rid of the map geometry and put everything in one data frame.
+
+```{r values to df}
+pop_points <- readRDS('/nfs/qread-data/DASY/pop_points.rds')
+
+pop_points_df <- map_dfr(1:nrow(countycodes), function(i) {
+  pts <- st_drop_geometry(pop_points[[i]])
+  tibble(countycodes[i, ], pts)
+})
+```
+
+
+How many non-missing points do we have for each raster and how many of these overlap?
+
+```{r nonmissing counts, message = FALSE}
+pop_points_df %>%
+  group_by(county_name, state_name) %>%
+  summarize(n_dasy_pts = sum(!is.na(pop_dasy)),
+            n_fb_pts = sum(!is.na(pop_fb)),
+            n_both = sum(!is.na(pop_dasy) & !is.na(pop_fb))) %>%
+  knitr::kable()
+```
+
+### Final comparison plots
+
+Now we can take the difference in population densities between the two rasters and plot. Here I show scatterplots with the 1:1 line for reference, which shows there is a wide discrepancy between estimates. The density plot shows the distribution of differences with a reference line at zero.
+The majority have a negative value (Facebook's estimate is higher at most pixels).
+
+```{r difference and plot, warning = FALSE}
+ggplot(pop_points_df, aes(x = pop_dasy, y = pop_fb)) +
+  facet_wrap(~ county_name, scales = 'free') +
+  geom_point() +
+  geom_abline(slope = 1, linetype = 'dashed', size = 1, color = 'slateblue') +
+  labs(x = 'our dasymetric', y = 'facebook dasymetric')
+
+ggplot(pop_points_df, aes(x = county_name, color = county_name, y = pop_diff)) +
+  geom_boxplot() +
+  geom_hline(yintercept = 0, linetype = 'dashed', color = 'slateblue') +
+  labs(y = 'our dasymetric - facebook dasymetric') +
+  theme(legend.position = 'none') +
+  scale_color_viridis_d() +
+  scale_y_continuous(trans=scales::pseudo_log_trans(base = 10))
+```
+
+It's sort of hard to tell what is going on but I think there is sort of a pattern where the bigger the county is, the worse the discepancy.
+
+We can also calculate the root mean squared "error" or difference between the two estimates and see if there is a pattern. Get the relative RMSE by dividing by population so we can compare.
+
+```{r error trend, message = FALSE}
+pop_rmse <- pop_points_df %>%
+  group_by(county_name) %>%
+  summarize(RMSE = sqrt(mean(pop_diff^2, na.rm = TRUE)))
+
+countypop <- countypop %>%
+  left_join(pop_rmse) %>%
+  mutate(relative_RMSE = RMSE/dasypop)
+
+ggplot(countypop, aes(x = dasypop, y = relative_RMSE)) +
+  geom_point() +
+  geom_text(aes(label = county_name), alpha = 0.5, vjust = 1.3) +
+  scale_x_log10(name = 'census population') +
+  scale_y_log10(name = 'relative discrepancy between estimates')
+```
+
+
+## Conclusion
+
+Even after correcting for population we can say based on this that there is a pattern where the more populated the county, the bigger the discrepancy between estimates. We could test this further but I think this is a good place to leave it, first because we should discuss further and second because we didn't want the paper to become an exercise in comparing two methods.
