@@ -1,0 +1,230 @@
+---
+title: "Risk estimate figure code"
+author: "Quentin D. Read"
+date: "7/6/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This document has all the code to make the data underlying the "validation" or inference figure, which will give a visual answer to the question of how much using dasymetric population estimates actually changes our inference. For the first example I am using the wildfire hazard map that classifies the contiguous USA into 5 fire risk categories, at 270 meter pixel size.
+
+The procedure is:
+
+- clip population rasters and environmental rasters to study area boundaries (we're using a few selected counties). Later we can do the whole USA if we want, but for now a few counties are enough for testing.
+- convert the environmental rasters to polygons, merging all adjacent pixels with the same class
+- for each polygon, sum the dasymetric population pixels in that polygon to get numbers of people in that risk category
+- sum across risk classes to get a histogram for each county
+- compare the histograms for each county side-by-side to see if there is a difference in inference between population estimates
+
+The population estimates we're using for now are:
+
+- Our dasymetric estimate
+- EPA dasymetric estimate
+- Facebook population estimate
+- Census block groups with population spread equally across block group
+
+*Note*: some of this code is not run when this notebook is rendered because it takes a long time. I ran it earlier and saved the output to load when the notebook is rendered.
+
+## Clip rasters to study area boundaries
+
+We already clipped the Facebook raster to county boundaries for the other script, and our dasymetric rasters are already split up by county. So here it's just the wildfire raster and the EPA dasymetric raster that are being split up.
+
+```{bash, eval = FALSE}
+tifpath="/nfs/qread-data/DASY/countyrasters"
+gpkgpath="/nfs/qread-data/DASY/countybounds"
+{
+  read
+  while IFS=, read -r county state fips; do 
+    echo "Processing $county County, $state. FIPS $fips"; 
+    
+    statefips=`echo $fips | cut -c 1-2`
+    countyfips=`echo $fips | cut -c 3-5`
+    
+    gdalwarp /nfs/qread-data/DASY/whp/Data/whp2020_GeoTIF/whp2020_cls_conus.tif ${tifpath}/county${fips}_wildfire.tif \
+     -overwrite -crop_to_cutline -cutline ${gpkgpath}/county${fips}.gpkg
+    gdalwarp /nfs/qread-data/DASY/epadasy/dasymetric_us_20160208/dasymetric_us_20160208.tif ${tifpath}/county${fips}_epadasy.tif \
+     -overwrite -crop_to_cutline -cutline ${gpkgpath}/county${fips}.gpkg
+  done 
+} < /nfs/qread-data/DASY/countycodesforfb.csv
+```
+
+## Load packages and read data
+
+The initial cropping is done with GDAL so we do not have to read country-wide rasters into memory. Now we move to R.
+
+```{r, message = FALSE, warning = FALSE}
+library(stars)
+library(sf)
+library(purrr)
+library(dplyr)
+library(glue)
+library(tidycensus)
+library(readr)
+library(ggplot2)
+```
+
+Now loop through and read the rasters for each county.
+
+```{r, message = FALSE, warning = FALSE, results = "hide"}
+countydata <- read_csv('/nfs/qread-data/DASY/countycodesforfb.csv', col_types = 'ccc')
+tifpath <- '/nfs/qread-data/DASY/countyrasters'
+
+wildfire_rasters <- map(countydata$FIPS, ~ read_stars(glue('{tifpath}/county{.}_wildfire.tif')))
+ourdasy_rasters <- map(countydata$FIPS, ~ read_stars(glue('{tifpath}/county{.}_dasy.tif')))
+epadasy_rasters <- map(countydata$FIPS, ~ read_stars(glue('{tifpath}/county{.}_epadasy.tif')))
+fbpop_rasters <- map(countydata$FIPS, ~ read_stars(glue('{tifpath}/county{.}_fblonglat.tif')))
+```
+
+Also load the census block group population estimates and geographies. These will be used for the "naive equal weighting" population estimate.
+
+```{r, message = FALSE, eval = FALSE}
+get_blockgroup_pop <- function(FIPS, crs) {
+ 
+  census_api_key(readLines('/research-home/qread/censusapikey.txt')) 
+
+  pop <- get_acs(geography = "block group", variables = "B01003_001", 
+                 year = 2016, state= substr(FIPS, 1, 2), county = substr(FIPS, 3, 5), 
+                 geometry = TRUE)   
+  
+  # Data QC: remove empty geometries from pop
+  pop <- pop[!is.na(st_dimension(pop)), ]
+  
+  st_transform(pop, crs = crs)
+}
+
+crs_wildfire <- st_crs(wildfire_rasters[[1]])
+blockgroup_pops <- map(countydata$FIPS, get_blockgroup_pop, crs = crs_wildfire)
+```
+
+
+## "Polygonize" the environmental raster
+
+We will use `st_as_sf()` to convert the wildfire raster to polygons. 
+
+```{r}
+wildfire_polygons <- map(wildfire_rasters, st_as_sf, as_points = FALSE, merge = TRUE)
+```
+
+Convert the polygons to each of the rasters' coordinate reference systems.
+
+```{r}
+wildfire_polygons_ourdasycrs <- map(wildfire_polygons, st_transform, crs = st_crs(ourdasy_rasters[[1]]))
+wildfire_polygons_epadasycrs <- map(wildfire_polygons, st_transform, crs = st_crs(epadasy_rasters[[1]]))
+wildfire_polygons_fbpopcrs <- map(wildfire_polygons, st_transform, crs = st_crs(fbpop_rasters[[1]]))
+
+# Correct invalid geometries in the lat-long polygons
+wildfire_polygons_fbpopcrs <- map(wildfire_polygons_fbpopcrs, st_make_valid)
+```
+
+
+## Get population totals by polygon
+
+Now for each of these polygons, sum up the number of individuals. Repeat for each of the population estimates. This step may take a couple of hours.
+
+```{r, eval = FALSE}
+wildfire_sums_ourdasy <- map2(ourdasy_rasters, wildfire_polygons_ourdasycrs, aggregate, FUN = sum, na.rm = TRUE)
+wildfire_sums_epadasy <- map2(epadasy_rasters, wildfire_polygons_epadasycrs, aggregate, FUN = sum, na.rm = TRUE)
+wildfire_sums_fbpop <- map2(fbpop_rasters, wildfire_polygons_fbpopcrs, aggregate, FUN = sum, na.rm = TRUE)
+```
+
+For the block group populations, we will do it the opposite way (population polygon and wildfire raster). Tabulate wildfire pixels for each block group polygon, and convert to a matrix. Then divide the population of each block group among the classes based on the number of pixels in each class in each block group.
+
+```{r, eval = FALSE}
+table_by_polygon <- function(env_raster, bg_pop_poly) {
+  map(st_geometry(bg_pop_poly), ~ as.data.frame(table(st_crop(env_raster, .)[[1]], useNA = 'always')))
+}
+
+wildfire_tables_blockgroups <- map2(wildfire_rasters, blockgroup_pops, table_by_polygon)
+
+sum_classes_blockgroup <- function(pop_table, bg_poly) {
+  map_dfr(1:length(pop_table), ~ data.frame(st_drop_geometry(bg_poly[., c('GEOID', 'estimate')]), pop_table[[.]])) %>%
+    group_by(GEOID) %>%
+    mutate(pop = estimate * Freq / sum(Freq))
+}
+
+wildfire_sums_blockgroups <- map2(wildfire_tables_blockgroups, blockgroup_pops, sum_classes_blockgroup)
+```
+
+```{r, include = FALSE}
+load('/nfs/qread-data/DASY/wildfire_sums_temp.RData')
+```
+
+
+## Get grand totals by class for each county
+
+Join the individual polygon population sums with the polygon classes and get the grand totals by class for each county, combining the output into one dataframe. 
+
+```{r, message = FALSE}
+grandtotal_classes <- function(env_poly, pop_poly) {
+  data.frame(env_class = env_poly[[1]], pop = pop_poly[[1]]) %>%
+    group_by(env_class) %>%
+    summarize(pop = sum(pop))
+}
+
+wildfire_grandtotals_ourdasy <- map2(wildfire_polygons_ourdasycrs, wildfire_sums_ourdasy, grandtotal_classes)
+wildfire_grandtotals_epadasy <- map2(wildfire_polygons_epadasycrs, wildfire_sums_epadasy, grandtotal_classes)
+wildfire_grandtotals_fbpop <- map2(wildfire_polygons_fbpopcrs, wildfire_sums_fbpop, grandtotal_classes)
+
+wildfire_grandtotals_blockgroups <- map(wildfire_sums_blockgroups, function(dat) {
+  dat %>%
+    rename(env_class = Var1) %>%
+    group_by(env_class) %>%
+    summarize(pop = sum(pop))
+})
+
+make_long_data <- function(grandtotals, estimate_name) {
+  countydata %>%
+    as_tibble %>%
+    mutate(estimate = estimate_name) %>%
+    mutate(listcol = grandtotals) %>%
+    tidyr::unnest(cols = listcol)
+}
+
+wildfire_risks <- rbind(
+  make_long_data(wildfire_grandtotals_ourdasy, 'our dasymetric'),
+  make_long_data(wildfire_grandtotals_epadasy, 'EPA dasymetric'),
+  make_long_data(wildfire_grandtotals_fbpop, 'Facebook pop map'),
+  make_long_data(wildfire_grandtotals_blockgroups, 'Census block group equal weighting')
+)
+```
+
+```{r, echo = FALSE, eval = FALSE}
+write_csv(wildfire_risks, '/nfs/qread-data/DASY/wildfire_risk_totals.csv')
+```
+
+## Process data some more
+
+Get rid of classes 6 and 7 which are unknown. Then normalize the totals so that we can compare them among counties with different populations. Also order the counties by population.
+
+```{r}
+pop_order <- c('Gove, KS', 'Quitman, MS', 'Coos, NH', 'Gallatin, MT', 'La Salle, IL', 'Durham, NC', 'Ada, ID', 'Anne Arundel, MD', 'Denver, CO', 'New York, NY', 'Los Angeles, CA')
+
+wildfire_risks <- wildfire_risks %>%
+  mutate(county_name = factor(glue('{county_name}, {state_name}'), levels = pop_order)) %>%
+  filter(!env_class %in% 6:7, !is.na(env_class)) %>%
+  group_by(estimate, county_name) %>%
+  mutate(pop_proportion = pop/sum(pop))
+```
+
+## Make a figure
+
+```{r out.width="100%"}
+ggplot(wildfire_risks, aes(x = env_class, y = pop_proportion, fill = estimate)) +
+  geom_col(position = 'dodge') +
+  facet_wrap(~ county_name) +
+  scale_x_discrete(name = 'Wildfire risk', labels = c('very low', 'low', 'med', 'high', 'very high')) +
+  scale_y_continuous(name = 'Population proportion', limits = c(0, 1), expand = expansion(mult = c(0, 0.01))) +
+  scale_fill_brewer(palette = 'Dark2', labels = function(x) stringr::str_wrap(x, width = 15)) +
+  theme_bw() +
+  theme(strip.background = element_blank(),
+        legend.position = c(0.9, 0.1),
+        axis.text.x = element_text(size = rel(0.75)))
+```
+
+Some initial thoughts on the figure:
+
+There seems to be at least a modest difference in inference depending on population estimation method. For instance, in Denver County, our dasymetric estimate puts more people in the "very low" and "medium" categories at the expense of "low", relative to an equal weighting approach. But in Los Angeles County, our dasymetric estimate seems to put more people in the lower risk categories than the equal-weighting approach. Obviously for the areas where fire risk is very low across the board, it doesn't matter. Also notice that the three dasymetric-style estimates all provide very similar inference to one another, but they all tend to be different from the naive equal-weighting approach.
+
