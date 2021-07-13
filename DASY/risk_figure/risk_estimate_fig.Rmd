@@ -169,8 +169,8 @@ load('/nfs/qread-data/DASY/wildfire_sums_temp.RData')
 Join the individual polygon population sums with the polygon classes and get the grand totals by class for each county, combining the output into one dataframe. 
 
 ```{r, message = FALSE}
-grandtotal_classes <- function(env_poly, pop_poly) {
-  data.frame(env_class = env_poly[[1]], pop = pop_poly[[1]]) %>%
+grandtotal_classes <- function(env_poly, pop_raster) {
+  data.frame(env_class = env_poly[[1]], pop = pop_raster[[1]]) %>%
     group_by(env_class) %>%
     summarize(pop = sum(pop))
 }

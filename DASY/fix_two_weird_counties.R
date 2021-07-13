@@ -74,10 +74,10 @@ imp.surf.mask <- raster::mask(imp.surf.crop, spTransform(as(pop.projected, "Spat
 # Correct for zero to one based indexing by adding 1 to the raster
 imp.surf.mask <- imp.surf.mask + 1
 
-reclass.table <- matrix(c(1,6,1,7,14,NA), ncol=3) #reclassify values 1-6 into 1 for keep drop the rest
+reclass.table <- matrix(c(1,6,1,7,14,NA), ncol = 3, byrow = TRUE) # reclassify values 1-6 into 1 for keep, drop the rest
 
-imp.roads <- reclassify(imp.surf.mask, reclass.table)
-imp.roads.p <- projectRaster(imp.roads, lu.ratio.zp)#have to reproject the descriptor file
+imp.roads <- reclassify(imp.surf.mask, reclass.table, right = NA)
+imp.roads.p <- projectRaster(as.factor(imp.roads), lu.ratio.zp) # have to reproject the descriptor file
 #Mask out roads (i.e, all NonNA values in imp.roads.p)
 RISA <- overlay(lu.ratio.zp, imp.roads.p, fun = function(x, y) {
   x[is.na(y[])] <- NA

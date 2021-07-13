@@ -3,6 +3,8 @@
 # QDR modified 10 Dec 2020 with these changes
 # - replace get_nlcd() with extracting directly from the NLCD raster already on SESYNC's server
 # - project everything to Albers equal-area before doing the computations so that area isn't distorted.
+# QDR modified 12 July 2021
+# - debugged the reclass table/ project raster part beginning on line 65
 
 # =========================
 # BEGIN FUNCTION DEFINITION
@@ -60,10 +62,10 @@ Get_Dasy_Data <- function(stid, ctyid){
   # Correct for zero to one based indexing by adding 1 to the raster
   imp.surf.mask <- imp.surf.mask + 1
 
-  reclass.table <- matrix(c(1,6,1,7,14,NA), ncol=3) #reclassify values 1-6 into 1 for keep drop the rest
+  reclass.table <- matrix(c(1,6,1,7,14,NA), ncol = 3, byrow = TRUE) # reclassify values 1-6 into 1 for keep, drop the rest
   
-  imp.roads <- reclassify(imp.surf.mask, reclass.table)
-  imp.roads.p <- projectRaster(imp.roads, lu.ratio.zp)#have to reproject the descriptor file
+  imp.roads <- reclassify(imp.surf.mask, reclass.table, right = NA)
+  imp.roads.p <- projectRaster(as.factor(imp.roads), lu.ratio.zp) # have to reproject the descriptor file
   #Mask out roads (i.e, all NonNA values in imp.roads.p)
   RISA <- overlay(lu.ratio.zp, imp.roads.p, fun = function(x, y) {
     x[is.na(y[])] <- NA

@@ -17,6 +17,7 @@ aa <- countydata$FIPS[1]
 ourdasy_aa <- read_stars(glue('{tifpath}/county{aa}_dasy.tif'))
 epadasy_aa <- read_stars(glue('{tifpath}/county{aa}_epadasy.tif'))
 fbpop_aa <- read_stars(glue('{tifpath}/county{aa}_fblonglat.tif'))
+huang_aa <- read_stars(glue('{tifpath}/county{aa}_huangdasy.tif'))
 
 cstdepth_aa <- read_stars('/nfs/qread-data/DASY/frd/FRD_24003C_Coastal_GeoTIFFs_20150909/CstDpth01pct.tif')
 
@@ -38,9 +39,23 @@ crs_cstdepth <- st_crs(cstdepth_aa)
 blockgroup_pop_aa <- get_blockgroup_pop(aa, crs = crs_cstdepth)
 
 cstdepth_ourdasycrs <- st_transform(cstdepth_aa, crs = st_crs(ourdasy_aa))
+cstdepth_epadasycrs <- st_transform(cstdepth_aa, crs = st_crs(epadasy_aa))
 
 # Just get the number of people living in the area with non-NA pixels
 # Convert this to polygon
-cstdepth_ourdasy_notna <- !is.na(cstdepth_ourdasycrs)
-cstdepth_ourdasy_notna_poly <- st_as_sf(cstdepth_ourdasy_notna, merge = TRUE, as_points = FALSE)
-ourdasy_cstdepth <- ourdasy_aa[!is.na(cstdepth_ourdasycrs)]
+cstdepth_aa_notna <- !is.na(cstdepth_aa)
+cstdepth_aa_notna_poly <- st_as_sf(cstdepth_aa_notna, as_points = FALSE, merge = TRUE)
+
+cstdepth_aa_notna_poly_ourdasycrs <- st_transform(cstdepth_aa_notna_poly, crs = st_crs(ourdasy_aa))
+cstdepth_aa_notna_poly_epadasycrs <- st_transform(cstdepth_aa_notna_poly, crs = st_crs(epadasy_aa))
+cstdepth_aa_notna_poly_fbpopcrs <- st_transform(cstdepth_aa_notna_poly, crs = st_crs(fbpop_aa))
+
+cstdepth_aa_sums <- aggregate(ourdasy_aa, cstdepth_aa_notna_poly_ourdasycrs, FUN = sum, na.rm = TRUE)
+
+grandtotal_classes <- function(env_poly, pop_raster) {
+  data.frame(env_class = env_poly[[1]], pop = pop_raster[[1]]) %>%
+    group_by(env_class) %>%
+    summarize(pop = sum(pop, na.rm = TRUE))
+}
+
+cstdepth_aa_grandtotals_ourdasy <- grandtotal_classes(cstdepth_aa_notna_poly_ourdasycrs, cstdepth_aa_sums)
