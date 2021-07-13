@@ -4,7 +4,8 @@
 # - replace get_nlcd() with extracting directly from the NLCD raster already on SESYNC's server
 # - project everything to Albers equal-area before doing the computations so that area isn't distorted.
 # QDR modified 12 July 2021
-# - debugged the reclass table/ project raster part beginning on line 65
+# - debugged the reclass table/ project raster part
+# - changed filepaths so Q can run code
 
 # =========================
 # BEGIN FUNCTION DEFINITION
@@ -15,7 +16,7 @@ Get_Dasy_Data <- function(stid, ctyid){
   # Albers equal-area projection
   aea <- '+proj=aea +lat_1=29.5 +lat_2=45.5 +lat_0=23 +lon_0=-96 +x_0=0 +y_0=0 +ellps=WGS84 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs'
 
-  census_api_key(readLines('/nfs/rswanwick-data/rswanwick_census_api_key.txt')) 
+  census_api_key(readLines('/research-home/qread/censusapikey.txt')) 
   # This is done to not have the API key in your environment or scripts (good practice)
 
   pop <- get_acs(geography = "block group", variables = "B01003_001", 
@@ -31,8 +32,8 @@ Get_Dasy_Data <- function(stid, ctyid){
   # Update: use gdalwarp to extract the county area, from the NLCD impervious raster, already in Albers projection
   # Use a temporary directory I created for the purpose to write the county polygon for extraction. 
   nlcd_imp_vrt <- '/nfs/public-data/NLCD/VRTs/NLCD_2016_Impervious_L48_20190405.vrt'
-  temp_polygon_filename <- as.character(glue("/nfs/rswanwick-data/DASY/temp_files/county-{stid}-{ctyid}.gpkg"))
-  temp_nlcdraster_filename <- as.character(glue("/nfs/rswanwick-data/DASY/temp_files/countynlcd-{stid}-{ctyid}.tif"))
+  temp_polygon_filename <- as.character(glue("/nfs/qread-data/DASY/temp_files/county-{stid}-{ctyid}.gpkg"))
+  temp_nlcdraster_filename <- as.character(glue("/nfs/qread-data/DASY/temp_files/countynlcd-{stid}-{ctyid}.tif"))
   st_write(st_union(pop.projected), dsn = temp_polygon_filename, driver = 'GPKG')
   gdalwarp(srcfile = nlcd_imp_vrt, dstfile = temp_nlcdraster_filename, cutline = temp_polygon_filename, crop_to_cutline = TRUE, tr = c(30, 30), dstnodata = "None")
   lu <- raster(temp_nlcdraster_filename)
@@ -53,7 +54,7 @@ Get_Dasy_Data <- function(stid, ctyid){
   
   #get the impervious surface descriptor dataset from: https://www.mrlc.gov/data?f%5B0%5D=category%3ALand%20Cover&f%5B1%5D=category%3AUrban%20Imperviousness&f%5B2%5D=year%3A2016
   # Now VRT is used.
-  imp.surf.desc <- raster("/nfs/rswanwick-data/DASY/NLCD_2016_impervious.vrt")
+  imp.surf.desc <- raster("/nfs/public-data/NLCD/NLCD_2016_Impervious_descriptor_L48_20190405/NLCD_2016_impervious.vrt")
   #mask out primary, secondary, and urban tertiary roads
   imp.surf.crop <- raster::crop(imp.surf.desc, as(pop.projected, "Spatial")) #crop imp surface to county
   #plot(imp.surf.crop)
@@ -83,7 +84,7 @@ Get_Dasy_Data <- function(stid, ctyid){
   dasy.pop <- (bg.sum.pop/bg.sum.RISA) * RISA
   
   #this is where will put the file path for rswanwick public data 
-  my_filename = as.character(glue("/nfs/rswanwick-data/DASY/tifs/neon-dasy-{stid}-{ctyid}.tif"))
+  my_filename = as.character(glue("/nfs/qread-data/DASY/tifs/neon-dasy-{stid}-{ctyid}.tif"))
   
   writeRaster(dasy.pop, my_filename, overwrite = TRUE) # Will overwrite existing file with the same name.
   
@@ -148,11 +149,11 @@ joutput <- get_slurm_out(sjob)
 cleanup_files(sjob)
 # Also delete the temporarily downloaded files
 # This is needed because now that we've created the file download directory manually, it does not automatically go away once the job finishes.
-system2('rm', '-r /nfs/rswanwick-data/DASY/temp_files/*') 
+system2('rm', '-r /nfs/qread-data/DASY/temp_files/*') 
 
 # Check which jobs did not run properly. This will be TRUE for all where the file was written as intended.
-tif_exists <- file.exists(as.character(glue("/nfs/rswanwick-data/DASY/tifs/neon-dasy-{fipscodes$stid}-{fipscodes$ctyid}.tif")))
+tif_exists <- file.exists(as.character(glue("/nfs/qread-data/DASY/tifs/neon-dasy-{fipscodes$stid}-{fipscodes$ctyid}.tif")))
 
 # Filter out the completed ones.
 fipscodes <- fipscodes %>%filter(!tif_exists)
-# Now run again starting at line 129 which will rerun the counties that didn't complete.
+# Now run again starting at line 134 which will rerun the counties that didn't complete.

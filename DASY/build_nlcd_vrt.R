@@ -3,7 +3,8 @@
 
 library(gdalUtils)
 
-direc <- "/nfs/rswanwick-data/DASY"
+# direc <- "/nfs/rswanwick-data/DASY"
+direc <- '/nfs/public-data/NLCD/NLCD_2016_Impervious_descriptor_L48_20190405'
 raster_file <- "NLCD_2016_Impervious_descriptor_L48_20190405.img"
 
 # Run gdalbuildvrt with all defaults to just create a VRT that points to the IMG without any modification
