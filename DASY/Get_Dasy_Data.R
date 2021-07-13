@@ -69,7 +69,7 @@ Get_Dasy_Data <- function(stid, ctyid){
   imp.roads.p <- projectRaster(as.factor(imp.roads), lu.ratio.zp) # have to reproject the descriptor file
   #Mask out roads (i.e, all NonNA values in imp.roads.p)
   RISA <- overlay(lu.ratio.zp, imp.roads.p, fun = function(x, y) {
-    x[is.na(y[])] <- NA
+    x[!is.na(y[])] <- NA
     return(x)
   })
   
