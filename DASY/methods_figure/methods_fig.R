@@ -67,13 +67,10 @@ imp.surf.crop <- raster::crop(imp.surf.desc, as(pop.projected, "Spatial")) #crop
 #plot(imp.surf.crop)
 imp.surf.mask <- raster::mask(imp.surf.crop, as(pop.projected, "Spatial")) #mask all non-county values to NA
 
-# Correct for zero to one based indexing by adding 1 to the raster
-imp.surf.mask <- imp.surf.mask + 1
-
 reclass.table <- matrix(c(1,6,1,7,14,NA), ncol = 3, byrow = TRUE) #reclassify values 1-6 into 1 for keep drop the rest
 
 imp.roads <- reclassify(imp.surf.mask, reclass.table, right = NA)
-imp.roads.p <- projectRaster(as.factor(imp.roads), lu.ratio.zp)#have to reproject the descriptor file
+imp.roads.p <- projectRaster(imp.roads, lu.ratio.zp, method = 'ngb')#have to reproject the descriptor file
 #Mask out roads (i.e, all NonNA values in imp.roads.p)
 RISA <- overlay(lu.ratio.zp, imp.roads.p, fun = function(x, y) {
   x[!is.na(y[])] <- NA
@@ -99,6 +96,18 @@ plot_box <- st_as_sf(data.frame(x = c(-76.58, -76.43), y = c(38.97, 39.03)), coo
   st_transform(crs = aea) %>%
   st_bbox
 
+# Reclassify road versus not road
+reclass.table2 <- matrix(c(1,6,1,7,11,2), ncol = 3, byrow = TRUE) #reclassify values 1-6 into 1 for keep drop the rest
+
+imp.roads2 <- reclassify(imp.surf.mask, reclass.table2, right = NA)
+imp.roads.p2 <- projectRaster(imp.roads2, lu.ratio.zp, method = 'ngb')#have to reproject the descriptor file
+
+lu_stars <- st_as_stars(lu)
+imp_stars <- st_as_stars(imp.roads.p2)
+imp_stars[[1]] <- as.character(imp_stars[[1]])
+imp_stars[imp_stars == 0] <- NA
+dasy_stars <- st_as_stars(dasy.pop)
+
 # 1. Block groups only
 
 p1 <- ggplot() +
@@ -108,7 +117,6 @@ p1 <- ggplot() +
   theme(legend.position = 'none')
 
 # 2. Impervious surface intensity
-lu_stars <- st_as_stars(lu)
 
 p2 <- ggplot() +
   geom_stars(data = lu_stars) +
@@ -117,7 +125,6 @@ p2 <- ggplot() +
   theme(legend.position = 'none')
 
 # 3. Impervious surface with roads taken out
-risa_stars <- st_as_stars(!is.na(RISA))
 
 p3 <- ggplot() +
   geom_stars(data = risa_stars) +
@@ -126,7 +133,6 @@ p3 <- ggplot() +
   theme(legend.position = 'none')
 
 # 4.Population density 
-dasy_stars <- st_as_stars(dasy.pop)
 
 p4 <- ggplot() +
   geom_stars(data = dasy_stars) +
@@ -140,46 +146,49 @@ p4 <- ggplot() +
 library(raster)
 library(ggspatial)
 library(qdrmapbox)
+library(gridExtra)
 
 download_dir = '/nfs/qread-data/DASY/mapbox_tiles'
 annapimage_raster <- stack(file.path(download_dir, 'annapimage.vrt'))
 
-maptheme <- theme(legend.position = 'bottom', axis.text = element_blank(), axis.title = element_blank(), axis.ticks = element_blank())
+maptheme <- theme(legend.position = 'bottom', legend.text = element_text(size = rel(0.5)), legend.title = element_text(size = rel(0.6)),
+                  axis.text = element_blank(), axis.title = element_blank(), axis.ticks = element_blank())
 mapcoord <- coord_sf(crs = aea, xlim = plot_box[c(1,3)], ylim = plot_box[c(2,4)], expand = FALSE)
 
+image_alpha <- 0.8
+
 p1map <- ggplot() +
-  annotation_spatial(data = annapimage_raster) +
+  annotation_spatial(data = annapimage_raster, alpha = image_alpha) +
   geom_sf(data = pop.projected, color = 'white', alpha = 0.3, aes(fill = estimate)) +
-  scale_fill_viridis_c(name = 'block group\npopulation') +
+  scale_fill_viridis_c(name = 'block group\npopulation', option = 'B') +
   mapcoord + maptheme
 
 p2map <- ggplot() +
-  annotation_spatial(data = annapimage_raster) +
+  annotation_spatial(data = annapimage_raster, alpha = image_alpha) +
   geom_stars(data = lu_stars/100) +
   geom_sf(data = pop.projected, color = 'white', alpha = 0.3, fill = NA, size = 0.3) +
-  scale_fill_viridis_c(name = 'impervious surface\npercentage', labels = scales::percent, na.value = 'transparent') +
+  scale_fill_viridis_c(name = 'impervious surface\npercentage', labels = scales::percent, na.value = 'transparent', option = 'B') +
   mapcoord + maptheme
 
 p3map <- ggplot() +
-  annotation_spatial(data = annapimage_raster) +
-  geom_stars(data = risa_stars) +
+  annotation_spatial(data = annapimage_raster, alpha = image_alpha) +
+  geom_stars(data = imp_stars) +
   geom_sf(data = pop.projected, color = 'white', alpha = 0.3, fill = NA, size = 0.3) +
-  scale_fill_manual(values = c('transparent', '#fdbb84')) +
-  mapcoord + maptheme +
-  theme(legend.position = 'none')
+  scale_fill_brewer(name = 'surface type', palette = 'Set2', labels = c('road (discarded)', 'non-road (kept)'), na.value = 'transparent', na.translate = FALSE) +
+  mapcoord + maptheme 
 
 p4map <- ggplot() +
-  annotation_spatial(data = annapimage_raster) +
+  annotation_spatial(data = annapimage_raster, alpha = image_alpha) +
   geom_stars(data = dasy_stars) +
   geom_sf(data = pop.projected, color = 'white', alpha = 0.3, fill = NA, size = 0.3) +
   scale_fill_viridis_c(name = 'dasymetric\npopulation', na.value = 'transparent', option = 'B') +
   mapcoord + maptheme
 
 # Bind together so that main panels line up.
+allmaps <- gtable_cbind(ggplotGrob(p1map), ggplotGrob(p2map), ggplotGrob(p3map), ggplotGrob(p4map))
+ggsave('/nfs/qread-data/DASY/figs/methods_figure_draft_annapolis.png', allmaps, height = 5, width = 12, dpi = 300)
 
-
-# Add MapBox logo and credits somewhere on this map.
+# FIXME Add MapBox logo and credits somewhere on this map.
 
   # mapbox_logo(xmin = -8870000, xmax = -8820000, ymin = 4535000, ymax = 4590000) +
-  # annotate('text', x = Inf, y = -Inf, label = '\u00a9 Mapbox \u00a9 OpenStreetMap', hjust = 1, vjust = -1, color = 'white', size = 2) +
-  # scale_color_viridis_c(trans = 'log10', labels = function(x) format(x, scientific = FALSE))
+  # annotate('text', x = Inf, y = -Inf, label = '\u00a9 Mapbox \u00a9 OpenStreetMap', hjust = 1, vjust = -1, color = 'white', size = 2) 

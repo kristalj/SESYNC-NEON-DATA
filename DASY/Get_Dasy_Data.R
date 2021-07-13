@@ -59,14 +59,11 @@ Get_Dasy_Data <- function(stid, ctyid){
   imp.surf.crop <- raster::crop(imp.surf.desc, as(pop.projected, "Spatial")) #crop imp surface to county
   #plot(imp.surf.crop)
   imp.surf.mask <- raster::mask(imp.surf.crop, as(pop.projected, "Spatial")) #mask all non-county values to NA
-  
-  # Correct for zero to one based indexing by adding 1 to the raster
-  imp.surf.mask <- imp.surf.mask + 1
 
   reclass.table <- matrix(c(1,6,1,7,14,NA), ncol = 3, byrow = TRUE) # reclassify values 1-6 into 1 for keep, drop the rest
   
   imp.roads <- reclassify(imp.surf.mask, reclass.table, right = NA)
-  imp.roads.p <- projectRaster(as.factor(imp.roads), lu.ratio.zp) # have to reproject the descriptor file
+  imp.roads.p <- projectRaster(imp.roads, lu.ratio.zp, method = 'ngb') # have to reproject the descriptor file
   #Mask out roads (i.e, all NonNA values in imp.roads.p)
   RISA <- overlay(lu.ratio.zp, imp.roads.p, fun = function(x, y) {
     x[!is.na(y[])] <- NA
@@ -139,11 +136,11 @@ get_dasy_all_counties <- function(fips) {
 }
 
 sjob <- slurm_map(fips_list, get_dasy_all_counties, jobname = 'DASYallcounties',
-                  nodes = 8, cpus_per_node = 8, pkgs = c("tidycensus", "raster", "tidyverse", "sf", "dplyr", "glue", "gdalUtils"),
-                  global_objects = "Get_Dasy_Data",
+                  nodes = 7, cpus_per_node = 8, pkgs = c("tidycensus", "raster", "tidyverse", "sf", "dplyr", "glue", "gdalUtils"),
+                  global_objects = "Get_Dasy_Data", 
                   submit = TRUE)
 
-# Get output after job is done. This is just for diagnostics. The actual files are written to /nfs/rswanwick-data/DASY/tifs/
+# Get output after job is done. This is just for diagnostics. 
 joutput <- get_slurm_out(sjob)
 # Run cleanup_files to delete the temporary diagnostic files.
 cleanup_files(sjob)
