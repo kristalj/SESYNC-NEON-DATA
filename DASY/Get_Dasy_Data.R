@@ -153,4 +153,4 @@ tif_exists <- file.exists(as.character(glue("/nfs/qread-data/DASY/tifs/neon-dasy
 
 # Filter out the completed ones.
 fipscodes <- fipscodes %>%filter(!tif_exists)
-# Now run again starting at line 134 which will rerun the counties that didn't complete.
+# Now run again starting at the line where fips_list is created, which will rerun the counties that didn't complete.
