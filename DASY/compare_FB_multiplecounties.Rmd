@@ -67,26 +67,12 @@ raster_proj=`gdalsrsinfo $datapath/population_usa_2019-07-01.vrt -o proj4 | xarg
 } < /nfs/qread-data/DASY/countycodesforfb.csv
 ```
 
-Copy the tifs from Rachel S directory to QDR directory due to ongoing issue with permissions.
-
-```{bash, eval = FALSE}
-sudo -i
-tifpath="/nfs/qread-data/DASY/countyrasters"
-{
-  read
-  while IFS=, read -r county state fips; do 
-  statefips=`echo $fips | cut -c 1-2`
-  countyfips=`echo $fips | cut -c 3-5`
-  cp /nfs/rswanwick-data/DASY/tifs/neon-dasy-${statefips}-${countyfips}.tif /tmp
-  done
-} < /tmp/countycodesforfb.csv
-```
-
 
 Now crop the virtual raster to each county's boundaries. Parse the FIPS name into the two substrings to get the right DASY tif.
 
 ```{bash, eval = FALSE}
 tifpath="/nfs/qread-data/DASY/countyrasters"
+dasypath="/nfs/qread-data/DASY/tifs"
 {
   read
   while IFS=, read -r county state fips; do 
@@ -97,7 +83,7 @@ tifpath="/nfs/qread-data/DASY/countyrasters"
     
     gdalwarp ${datapath}/population_usa_2019-07-01.vrt ${tifpath}/county${fips}_fblonglat.tif \
      -overwrite -crop_to_cutline -cutline ${gpkgpath}/county${fips}longlat.gpkg
-    gdalwarp /tmp/neon-dasy-${statefips}-${countyfips}.tif ${tifpath}/county${fips}_dasy.tif \
+    gdalwarp ${dasypath}/neon-dasy-${statefips}-${countyfips}.tif ${tifpath}/county${fips}_dasy.tif \
      -tr 30 30 -overwrite -crop_to_cutline -cutline ${gpkgpath}/county${fips}longlat.gpkg
   done 
 } < /nfs/qread-data/DASY/countycodesforfb.csv
@@ -303,3 +289,8 @@ ggplot(countypop, aes(x = dasypop, y = relative_RMSE)) +
 ## Conclusion
 
 Even after correcting for population we can say based on this that there is a pattern where the more populated the county, the bigger the discrepancy between estimates. We could test this further but I think this is a good place to leave it, first because we should discuss further and second because we didn't want the paper to become an exercise in comparing two methods.
+
+## Changelog
+
+- 10 May 2021: Original version
+- 14 July 2021: Edited to use corrected dasy tifs (changed file paths)

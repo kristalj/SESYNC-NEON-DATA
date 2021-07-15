@@ -1,7 +1,7 @@
 ---
 title: "Risk estimate figure code"
 author: "Quentin D. Read"
-date: "7/6/2021"
+date: "7/14/2021"
 output: html_document
 ---
 
@@ -74,9 +74,10 @@ Now loop through and read the rasters for each county.
 ```{r, message = FALSE, warning = FALSE, results = "hide"}
 countydata <- read_csv('/nfs/qread-data/DASY/countycodesforfb.csv', col_types = 'ccc')
 tifpath <- '/nfs/qread-data/DASY/countyrasters'
+dasypath <- '/nfs/qread-data/DASY/tifs'
 
 wildfire_rasters <- map(countydata$FIPS, ~ read_stars(glue('{tifpath}/county{.}_wildfire.tif')))
-ourdasy_rasters <- map(countydata$FIPS, ~ read_stars(glue('{tifpath}/county{.}_dasy.tif')))
+ourdasy_rasters <- map(countydata$FIPS, ~ read_stars(glue('{dasypath}/neon-dasy-{substr(., 1, 2)}-{substr(., 3, 5)}.tif')))
 epadasy_rasters <- map(countydata$FIPS, ~ read_stars(glue('{tifpath}/county{.}_epadasy.tif')))
 huang_rasters <- map(countydata$FIPS, ~ read_stars(glue('{tifpath}/county{.}_huangdasy.tif')))
 fbpop_rasters <- map(countydata$FIPS, ~ read_stars(glue('{tifpath}/county{.}_fblonglat.tif')))
@@ -243,4 +244,7 @@ There seems to be at least a modest difference in inference depending on populat
 
 Final note: there are many NA or unclassified pixels in the wildfire raster for some of the counties, which aren't included in the figure. I believe that is why New York County (Manhattan) is shown as having uniformly high wildfire risk. Most of the pixels there are unclassified and maybe just a few pixels have values there. It might not be the best example to include in the final figure.
 
+## Changelog
 
+- 6 July 2021: original version
+- 14 July 2021: modified to use new dasy rasters (change file paths)

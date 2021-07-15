@@ -14,8 +14,8 @@ library(gdalUtils)
 library(stars)
 
 ### State and county ID used for the example (can be changed)
-stid <- '24'
-ctyid <- '003'
+stid <- '51'
+ctyid <- '187'
 
 
 # Produce data for map (adapted from get_dasy_data.R) ---------------------
@@ -92,7 +92,7 @@ dasy.pop <- (bg.sum.pop/bg.sum.RISA) * RISA
 # Create maps -------------------------------------------------------------
 
 # Calculate bounding box in Albers coordinates 
-plot_box <- st_as_sf(data.frame(x = c(-76.58, -76.43), y = c(38.97, 39.03)), coords = c('x', 'y'), crs = 4326) %>%
+plot_box <- st_as_sf(data.frame(x = c(-78.23, -78.08), y = c(38.86, 38.94)), coords = c('x', 'y'), crs = 4326) %>%
   st_transform(crs = aea) %>%
   st_bbox
 
@@ -108,39 +108,6 @@ imp_stars[[1]] <- as.character(imp_stars[[1]])
 imp_stars[imp_stars == 0] <- NA
 dasy_stars <- st_as_stars(dasy.pop)
 
-# 1. Block groups only
-
-p1 <- ggplot() +
-  geom_sf(data = pop.projected, aes(fill = estimate)) +
-  coord_sf(xlim = plot_box[c(1,3)], ylim = plot_box[c(2,4)], expand = FALSE) +
-  scale_fill_viridis_c() +
-  theme(legend.position = 'none')
-
-# 2. Impervious surface intensity
-
-p2 <- ggplot() +
-  geom_stars(data = lu_stars) +
-  coord_sf(xlim = plot_box[c(1,3)], ylim = plot_box[c(2,4)], expand = FALSE) +
-  scale_fill_viridis_c() +
-  theme(legend.position = 'none')
-
-# 3. Impervious surface with roads taken out
-
-p3 <- ggplot() +
-  geom_stars(data = risa_stars) +
-  coord_sf(xlim = plot_box[c(1,3)], ylim = plot_box[c(2,4)], expand = FALSE) +
-  scale_fill_manual(values = c('transparent', 'black')) +
-  theme(legend.position = 'none')
-
-# 4.Population density 
-
-p4 <- ggplot() +
-  geom_stars(data = dasy_stars) +
-  coord_sf(xlim = plot_box[c(1,3)], ylim = plot_box[c(2,4)], expand = FALSE) +
-  scale_fill_viridis_c() +
-  theme(legend.position = 'none')
-
-
 # Create maps with mapbox tiles -------------------------------------------
 
 library(raster)
@@ -148,8 +115,8 @@ library(ggspatial)
 library(qdrmapbox)
 library(gridExtra)
 
-download_dir = '/nfs/qread-data/DASY/mapbox_tiles'
-annapimage_raster <- stack(file.path(download_dir, 'annapimage.vrt'))
+download_dir = '/nfs/qread-data/DASY/mapbox_tiles_scbi'
+scbiimage_raster <- stack(file.path(download_dir, 'scbiimage.vrt'))
 
 maptheme <- theme(legend.position = 'bottom', legend.text = element_text(size = rel(0.5)), legend.title = element_text(size = rel(0.6)),
                   axis.text = element_blank(), axis.title = element_blank(), axis.ticks = element_blank())
@@ -158,27 +125,27 @@ mapcoord <- coord_sf(crs = aea, xlim = plot_box[c(1,3)], ylim = plot_box[c(2,4)]
 image_alpha <- 0.8
 
 p1map <- ggplot() +
-  annotation_spatial(data = annapimage_raster, alpha = image_alpha) +
+  annotation_spatial(data = scbiimage_raster, alpha = image_alpha) +
   geom_sf(data = pop.projected, color = 'white', alpha = 0.3, aes(fill = estimate)) +
   scale_fill_viridis_c(name = 'block group\npopulation', option = 'B') +
   mapcoord + maptheme
 
 p2map <- ggplot() +
-  annotation_spatial(data = annapimage_raster, alpha = image_alpha) +
+  annotation_spatial(data = scbiimage_raster, alpha = image_alpha) +
   geom_stars(data = lu_stars/100) +
   geom_sf(data = pop.projected, color = 'white', alpha = 0.3, fill = NA, size = 0.3) +
   scale_fill_viridis_c(name = 'impervious surface\npercentage', labels = scales::percent, na.value = 'transparent', option = 'B') +
   mapcoord + maptheme
 
 p3map <- ggplot() +
-  annotation_spatial(data = annapimage_raster, alpha = image_alpha) +
+  annotation_spatial(data = scbiimage_raster, alpha = image_alpha) +
   geom_stars(data = imp_stars) +
   geom_sf(data = pop.projected, color = 'white', alpha = 0.3, fill = NA, size = 0.3) +
   scale_fill_brewer(name = 'surface type', palette = 'Set2', labels = c('road (discarded)', 'non-road (kept)'), na.value = 'transparent', na.translate = FALSE) +
   mapcoord + maptheme 
 
 p4map <- ggplot() +
-  annotation_spatial(data = annapimage_raster, alpha = image_alpha) +
+  annotation_spatial(data = scbiimage_raster, alpha = image_alpha) +
   geom_stars(data = dasy_stars) +
   geom_sf(data = pop.projected, color = 'white', alpha = 0.3, fill = NA, size = 0.3) +
   scale_fill_viridis_c(name = 'dasymetric\npopulation', na.value = 'transparent', option = 'B') +
@@ -186,52 +153,9 @@ p4map <- ggplot() +
 
 # Bind together so that main panels line up.
 allmaps <- gtable_cbind(ggplotGrob(p1map), ggplotGrob(p2map), ggplotGrob(p3map), ggplotGrob(p4map))
-ggsave('/nfs/qread-data/DASY/figs/methods_figure_draft_annapolis.png', allmaps, height = 5, width = 12, dpi = 300)
+ggsave('/nfs/qread-data/DASY/figs/methods_figure_draft_frontroyal.png', allmaps, height = 5, width = 12, dpi = 300)
 
 # FIXME Add MapBox logo and credits somewhere on this map.
 
   # mapbox_logo(xmin = -8870000, xmax = -8820000, ymin = 4535000, ymax = 4590000) +
   # annotate('text', x = Inf, y = -Inf, label = '\u00a9 Mapbox \u00a9 OpenStreetMap', hjust = 1, vjust = -1, color = 'white', size = 2) 
-
-
-# Alternative centered on SERC --------------------------------------------
-
-download_dir = '/nfs/qread-data/DASY/mapbox_tiles_serc'
-sercimage_raster <- stack(file.path(download_dir, 'sercimage.vrt'))
-
-plot_box <- st_as_sf(data.frame(x = c(-76.63, -76.49), y = c(38.87, 38.94)), coords = c('x', 'y'), crs = 4326) %>%
-  st_transform(crs = aea) %>%
-  st_bbox
-
-mapcoord <- coord_sf(crs = aea, xlim = plot_box[c(1,3)], ylim = plot_box[c(2,4)], expand = FALSE)
-
-p1map <- ggplot() +
-  annotation_spatial(data = sercimage_raster, alpha = image_alpha) +
-  geom_sf(data = pop.projected, color = 'white', alpha = 0.3, aes(fill = estimate)) +
-  scale_fill_viridis_c(name = 'block group\npopulation', option = 'B') +
-  mapcoord + maptheme
-
-p2map <- ggplot() +
-  annotation_spatial(data = sercimage_raster, alpha = image_alpha) +
-  geom_stars(data = lu_stars/100) +
-  geom_sf(data = pop.projected, color = 'white', alpha = 0.3, fill = NA, size = 0.3) +
-  scale_fill_viridis_c(name = 'impervious surface\npercentage', labels = scales::percent, na.value = 'transparent', option = 'B') +
-  mapcoord + maptheme
-
-p3map <- ggplot() +
-  annotation_spatial(data = sercimage_raster, alpha = image_alpha) +
-  geom_stars(data = imp_stars) +
-  geom_sf(data = pop.projected, color = 'white', alpha = 0.3, fill = NA, size = 0.3) +
-  scale_fill_brewer(name = 'surface type', palette = 'Set2', labels = c('road (discarded)', 'non-road (kept)'), na.value = 'transparent', na.translate = FALSE) +
-  mapcoord + maptheme 
-
-p4map <- ggplot() +
-  annotation_spatial(data = sercimage_raster, alpha = image_alpha) +
-  geom_stars(data = dasy_stars) +
-  geom_sf(data = pop.projected, color = 'white', alpha = 0.3, fill = NA, size = 0.3) +
-  scale_fill_viridis_c(name = 'dasymetric\npopulation', na.value = 'transparent', option = 'B') +
-  mapcoord + maptheme
-
-# Bind together so that main panels line up.
-allmaps <- gtable_cbind(ggplotGrob(p1map), ggplotGrob(p2map), ggplotGrob(p3map), ggplotGrob(p4map))
-ggsave('/nfs/qread-data/DASY/figs/methods_figure_draft_edgewater.png', allmaps, height = 5, width = 12, dpi = 300)
