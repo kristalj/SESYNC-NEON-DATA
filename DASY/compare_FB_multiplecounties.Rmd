@@ -265,7 +265,7 @@ ggplot(pop_points_df, aes(x = county_name, color = county_name, y = pop_diff)) +
   scale_y_continuous(trans=scales::pseudo_log_trans(base = 10))
 ```
 
-It's sort of hard to tell what is going on but I think there is sort of a pattern where the bigger the county is, the worse the discepancy.
+The bigger the county, the bigger the absolute difference, but this is trivial. It's more important to compare the relative error.
 
 We can also calculate the root mean squared "error" or difference between the two estimates and see if there is a pattern. Get the relative RMSE by dividing by population so we can compare.
 
@@ -288,7 +288,7 @@ ggplot(countypop, aes(x = dasypop, y = relative_RMSE)) +
 
 ## Conclusion
 
-Even after correcting for population we can say based on this that there is a pattern where the more populated the county, the bigger the discrepancy between estimates. We could test this further but I think this is a good place to leave it, first because we should discuss further and second because we didn't want the paper to become an exercise in comparing two methods.
+Even after correcting for population we can say based on this that there is a pattern where the more populated the county, the smaller the discrepancy between estimates. We could test this further but I think this is a good place to leave it, first because we should discuss further and second because we didn't want the paper to become an exercise in comparing two methods.
 
 ## Changelog
 
