@@ -83,6 +83,16 @@ flood_risks <- map2_dfr(list(wse_raster_grandtotals_ourdasy, wse_raster_grandtot
      c('our dasymetric', 'EPA dasymetric', 'Huang et al. population grid', 'Facebook pop map', 'Census block group equal weighting'),
     ~ tibble(method = .y, .x))
 
+# Save results
+write_csv(flood_risks, '/nfs/qread-data/DASY/flood_risk_totals_AA.csv')
+
+# reshape
+flood_risks %>%
+  group_by(method) %>%
+  mutate(prop = pop/sum(pop),
+         env_class = c('not_at_risk', 'at_risk')[env_class+1]) %>%
+  tidyr::pivot_wider(names_from = env_class, values_from = c(pop, prop))
+
 # Make a fig
 flood_risks %>%
   group_by(method) %>%
