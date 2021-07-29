@@ -63,6 +63,7 @@ library(tidycensus)
 library(readr)
 library(ggplot2)
 library(gdalUtils)
+library(rslurm)
 ```
 
 Here note that the FIPS code has to be put in single quotes for the SQL WHERE. In contrast, when running from the command line I had to put it in double quotes. That took a lot of trial and error to figure out!
@@ -140,14 +141,13 @@ epadasy_rasters_wf <- map(counties_wildfire$fips, ~ read_stars(glue('{tifpath}/c
 huang_rasters_wf <- map(counties_wildfire$fips, ~ read_stars(glue('{tifpath}/county{.}_huangdasy.tif')))
 fbpop_rasters_wf <- map(counties_wildfire$fips, ~ read_stars(glue('{tifpath}/county{.}_fblonglat.tif')))
 
-flood_rasters <- map(counties_flood$wse_filename, raster::raster)
 ourdasy_rasters_fl <- map(counties_flood$fips, ~ read_stars(glue('{dasypath}/neon-dasy-{substr(., 1, 2)}-{substr(., 3, 5)}.tif')))
 epadasy_rasters_fl <- map(counties_flood$fips, ~ read_stars(glue('{tifpath}/county{.}_epadasy.tif')))
 huang_rasters_fl <- map(counties_flood$fips, ~ read_stars(glue('{tifpath}/county{.}_huangdasy.tif')))
 fbpop_rasters_fl <- map(counties_flood$fips, ~ read_stars(glue('{tifpath}/county{.}_fblonglat.tif')))
 ```
 
-Also load the census block group population estimates and geographies. These will be used for the "naive equal weighting" population estimate.
+Also load the census block group population estimates and geographies. These will be used for the "naive equal weighting" population estimate. Note that all the flood rasters have a different coordinate reference system so the block group population polygons are transformed each to a different one.
 
 ```{r, message = FALSE, eval = FALSE}
 get_blockgroup_pop <- function(FIPS, crs) {
@@ -173,28 +173,56 @@ blockgroup_pops_fl <- map2(counties_flood$fips, crs_flood, get_blockgroup_pop)
 
 ## "Polygonize" the environmental rasters
 
-We will use `st_as_sf()` to convert the wildfire raster and flood raster (converted to binary) to polygons. 
+We will use `st_as_sf()` to convert the wildfire raster and flood raster (converted to binary) to polygons. I needed to parallelize this because of the high memory requirements.
 
-```{r}
-wildfire_polygons <- map(wildfire_rasters, st_as_sf, as_points = FALSE, merge = TRUE)
+```{r, eval = FALSE}
+sjob_wild <- slurm_map(wildfire_rasters, st_as_sf, jobname = 'wf_to_poly', 
+                       nodes = 2, cpus_per_node = 4,
+                       as_points = FALSE, merge = TRUE)
+wildfire_polygons <- get_slurm_out(sjob_wild)
+cleanup_files(sjob_wild)
 
-wse_notna_raster <- map(wse_rasters, ~ st_as_stars(!is.na(.)))
-wse_notna_poly <- map(wse_rasters, st_as_sf, as_points = FALSE, merge = TRUE)
+make_poly_and_raster <- function(wse_filename, fips) {
+  flood_raster <- raster(wse_filename)
+  file_name <- glue('/nfs/qread-data/DASY/countyrasters/county{fips}_floodbinary.tif')
+  if (!file.exists(file_name)) {
+    flood_notna_raster <- st_as_stars(!is.na(flood_raster))
+    write_stars(flood_notna_raster, file_name)
+  } else {
+    flood_notna_raster <- read_stars(file_name)
+  }
+  flood_notna_poly <- st_as_sf(flood_notna_raster, as_points = FALSE, merge = TRUE)
+  return(flood_notna_poly)
+}
+
+sjob_flood <- slurm_apply(make_poly_and_raster, counties_flood[,c('wse_filename', 'fips')],
+                          pkgs = c('raster', 'stars', 'sf', 'glue'), jobname = 'fl_to_poly',
+                          nodes = 4, 
+                          slurm_options = list(partition = 'sesync', mem = '100gb'))
+
+flood_polygons <- get_slurm_out(sjob_flood)
+cleanup_files(sjob_flood)
+
+saveRDS(wildfire_polygons, file = '/nfs/qread-data/DASY/wildfire_polygons.RDS')
+saveRDS(flood_polygons, file = '/nfs/qread-data/DASY/flood_polygons.RDS')
 ```
 
 Convert the polygons to each of the rasters' coordinate reference systems. Correct invalid geometries in the lat-long polygons.
 
 ```{r}
+wildfire_polygons <- readRDS('/nfs/qread-data/DASY/wildfire_polygons.RDS')
+flood_polygons <- readRDS('/nfs/qread-data/DASY/flood_polygons.RDS')
+
 wildfire_polygons_ourdasycrs <- map(wildfire_polygons, st_transform, crs = st_crs(ourdasy_rasters[[1]]))
 wildfire_polygons_epadasycrs <- map(wildfire_polygons, st_transform, crs = st_crs(epadasy_rasters[[1]]))
 wildfire_polygons_huangcrs <- map(wildfire_polygons, st_transform, crs = st_crs(huang_rasters[[1]]))
 wildfire_polygons_fbpopcrs <- map(wildfire_polygons, st_transform, crs = st_crs(fbpop_rasters[[1]])) %>%
   map(st_make_valid)
 
-flood_polygons_ourdasycrs <- map(wse_notna_poly, st_transform, crs = st_crs(ourdasy_rasters[[1]]))
-flood_polygons_epadasycrs <- map(wse_notna_poly, st_transform, crs = st_crs(epadasy_rasters[[1]]))
-flood_polygons_huangcrs <- map(wse_notna_poly, st_transform, crs = st_crs(huang_rasters[[1]]))
-flood_polygons_fbpopcrs <- map(wse_notna_poly, st_transform, crs = st_crs(fbpop_rasters[[1]])) %>%
+flood_polygons_ourdasycrs <- map(flood_polygons, st_transform, crs = st_crs(ourdasy_rasters[[1]]))
+flood_polygons_epadasycrs <- map(flood_polygons, st_transform, crs = st_crs(epadasy_rasters[[1]]))
+flood_polygons_huangcrs <- map(flood_polygons, st_transform, crs = st_crs(huang_rasters[[1]]))
+flood_polygons_fbpopcrs <- map(flood_polygons, st_transform, crs = st_crs(fbpop_rasters[[1]])) %>%
   map(st_make_valid)
 
 ```
@@ -202,9 +230,16 @@ flood_polygons_fbpopcrs <- map(wse_notna_poly, st_transform, crs = st_crs(fbpop_
 
 ## Get population totals by polygon
 
-Now for each of these polygons, sum up the number of individuals. Repeat for each of the population estimates. This step may take a couple of hours.
+Now for each of these polygons, sum up the number of individuals. Repeat for each of the population estimates. Again parallelize with rslurm.
 
 ```{r, eval = FALSE}
+sjob_wild_sums <- slurm_apply(function(i) {
+  wildfire_sums_ourdasy <- map2(ourdasy_rasters, wildfire_polygons_ourdasycrs, aggregate, FUN = sum, na.rm = TRUE)
+  wildfire_sums_epadasy <- map2(epadasy_rasters, wildfire_polygons_epadasycrs, aggregate, FUN = sum, na.rm = TRUE)
+  wildfire_sums_huang <- map2(huang_rasters, wildfire_polygons_huangcrs, aggregate, FUN = sum, na.rm = TRUE)
+  wildfire_sums_fbpop <- map2(fbpop_rasters, wildfire_polygons_fbpopcrs, aggregate, FUN = sum, na.rm = TRUE)
+})
+
 wildfire_sums_ourdasy <- map2(ourdasy_rasters, wildfire_polygons_ourdasycrs, aggregate, FUN = sum, na.rm = TRUE)
 wildfire_sums_epadasy <- map2(epadasy_rasters, wildfire_polygons_epadasycrs, aggregate, FUN = sum, na.rm = TRUE)
 wildfire_sums_huang <- map2(huang_rasters, wildfire_polygons_huangcrs, aggregate, FUN = sum, na.rm = TRUE)
@@ -216,7 +251,7 @@ flood_sums_huang <- map2(huang_rasters, flood_polygons_huangcrs, aggregate, FUN 
 flood_sums_fbpop <- map2(fbpop_rasters, flood_polygons_fbpopcrs, aggregate, FUN = sum, na.rm = TRUE)
 ```
 
-For the block group populations, we will do it the opposite way (population polygon and wildfire raster). Tabulate wildfire pixels for each block group polygon, and convert to a matrix. Then divide the population of each block group among the classes based on the number of pixels in each class in each block group.
+For the wildfire by block group population weighting, we will do it the opposite way (population polygon and wildfire raster). Tabulate wildfire pixels for each block group polygon, and convert to a matrix. Then divide the population of each block group among the classes based on the number of pixels in each class in each block group. 
 
 ```{r, eval = FALSE}
 table_by_polygon <- function(env_raster, bg_pop_poly) {
@@ -234,13 +269,32 @@ sum_classes_blockgroup <- function(pop_table, bg_poly) {
 wildfire_sums_blockgroups <- map2(wildfire_tables_blockgroups, blockgroup_pops, sum_classes_blockgroup)
 ```
 
+The method for flood sums by block group is different as well. We are using the polygons in both cases.
+
+```{r, eval = FALSE}
+# For blockgroups, instead of aggregating pop raster by flood polygon, instead intersect blockgroup polygon and flood polygon.
+get_blockgroup_sums <- function(bg_pop, env_poly, env_crs) {
+  bg_pop %>%
+    st_transform(env_crs) %>%
+    mutate(area = st_area(.)) %>%
+    st_intersection(env_poly) %>%
+    mutate(area_int = st_area(.))
+}
+
+wse_sums_blockgroup <- map2(blockgroup_pops, wse_notna_poly, env_crs = st_crs(wse_notna_raster[[1]]))
+
+```
+
+
 ```{r, echo = FALSE, eval = FALSE}
-save(wildfire_sums_blockgroups, wildfire_sums_epadasy, wildfire_sums_ourdasy, wildfire_sums_huang, wildfire_sums_fbpop, file = '/nfs/qread-data/DASY/wildfire_sums_temp.RData')
+save(wildfire_sums_blockgroups, wildfire_sums_epadasy, wildfire_sums_ourdasy, wildfire_sums_huang, wildfire_sums_fbpop,
+     flood_sums_blockgroups, flood_sums_epadasy, flood_sums_ourdasy, flood_sums_huang, flood_sums_fbpop,
+     file = '/nfs/qread-data/DASY/allrisk_sums_temp.RData')
 ```
 
 
 ```{r, include = FALSE}
-load('/nfs/qread-data/DASY/wildfire_sums_temp.RData')
+load('/nfs/qread-data/DASY/allrisk_sums_temp.RData')
 ```
 
 
@@ -327,3 +381,4 @@ Final note: there are many NA or unclassified pixels in the wildfire raster for 
 
 - 6 July 2021: original version
 - 14 July 2021: modified to use new dasy rasters (change file paths)
+- 29 July 2021: new version with both wildfire risk and flood risk maps
