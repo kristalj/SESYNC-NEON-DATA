@@ -32,40 +32,26 @@ The population estimates we're using for now are:
 
 ## Stratified random sample of counties
 
-I took the SRS of counties in a separate script. It isn't too important which counties are used because this is just illustrative. For the wildfire risk, I took all counties in the eleven Western states (WA, OR, CA, ID, NV, MT, WY, CO, UT, AZ, NM) and divided them up by population quintile (5 groups). I selected three random counties from each quintile. I did the same for flood risk except I used only coastal states in the lower 48 (both Atlantic and Pacific coasts).
+I took the SRS of counties in a separate script. It isn't too important which counties are used because this is just illustrative. For the wildfire risk, I took all counties in the eleven Western states (WA, OR, CA, ID, NV, MT, WY, CO, UT, AZ, NM) and divided them up by population quintile (5 groups). I selected three random counties from each quintile. I did the same for flood risk except I used only coastal states in the lower 48 (both Atlantic and Pacific coasts). I had to sample quite a few counties to get to 10 counties that actually had flood risk rasters available from FEMA, so they are not perfectly divided among the quintiles. But there is a decent spread of population.
 
 The wildfire risk map is available for the entire contiguous USA but the FEMA flood risk maps are only available for some of the counties. I went to the FEMA site and searched each county manually to get the data. I got data for ten of the counties which should be plenty for our case study.
 
 What counties are we using?
 
-## Clip rasters to study area boundaries
+```{r, echo = FALSE}
+counties_wildfire <- read.csv('/nfs/qread-data/DASY/counties_wildfire.csv', colClasses = 'character')
+counties_flood <- read.csv('/nfs/qread-data/DASY/counties_flood_allfematifs.csv', colClasses = 'character')
 
-We already clipped the Facebook raster to county boundaries for the other script, and our dasymetric rasters are already split up by county. So here it's just the wildfire raster, the EPA dasymetric raster, and the Huang et al. population grid that are being split up.
+knitr::kable(counties_wildfire[,1:2], col.names = c('County', 'State'), caption = 'Wildfire risk counties')
 
-```{bash, eval = FALSE}
-tifpath="/nfs/qread-data/DASY/countyrasters"
-gpkgpath="/nfs/qread-data/DASY/countybounds"
-{
-  read
-  while IFS=, read -r county state fips; do 
-    echo "Processing $county County, $state. FIPS $fips"; 
-    
-    statefips=`echo $fips | cut -c 1-2`
-    countyfips=`echo $fips | cut -c 3-5`
-    
-    gdalwarp /nfs/qread-data/DASY/whp/Data/whp2020_GeoTIF/whp2020_cls_conus.tif ${tifpath}/county${fips}_wildfire.tif \
-     -overwrite -crop_to_cutline -cutline ${gpkgpath}/county${fips}.gpkg
-    gdalwarp /nfs/qread-data/DASY/epadasy/dasymetric_us_20160208/dasymetric_us_20160208.tif ${tifpath}/county${fips}_epadasy.tif \
-     -overwrite -crop_to_cutline -cutline ${gpkgpath}/county${fips}.gpkg
-    gdalwarp /nfs/qread-data/DASY/huang_grid/PopGrid.tif ${tifpath}/county${fips}_huangdasy.tif \
-     -overwrite -crop_to_cutline -cutline ${gpkgpath}/county${fips}.gpkg
-  done 
-} < /nfs/qread-data/DASY/countycodesforfb.csv
+counties_flood$county_name <- paste(counties_flood$county_name, 'County')
+
+knitr::kable(counties_flood[,2:1], col.names = c('County', 'State'), caption = 'Flood risk counties')
 ```
 
-## Load packages and read data
+## Generate separate shapefiles for each target county
 
-The initial cropping is done with GDAL so we do not have to read country-wide rasters into memory. Now we move to R.
+This makes it a lot easier to do operations on each county separately. We also project them to lat-long geographic coordinate system for use with the Facebook raster.
 
 ```{r, message = FALSE, warning = FALSE}
 library(stars)
@@ -76,20 +62,89 @@ library(glue)
 library(tidycensus)
 library(readr)
 library(ggplot2)
+library(gdalUtils)
 ```
 
-Now loop through and read the rasters for each county.
+Here note that the FIPS code has to be put in single quotes for the SQL WHERE. In contrast, when running from the command line I had to put it in double quotes. That took a lot of trial and error to figure out!
+
+```{r, eval = FALSE}
+gpkgpath <- "/nfs/qread-data/DASY/countybounds"
+raster_proj <- gdalsrsinfo('/nfs/qread-data/raw_data/facebookpop/population_usa_2019-07-01.vrt', as.CRS = TRUE)
+
+all_fips <- bind_rows(counties_flood, counties_wildfire) %>%
+  select(state_code, county_code)
+
+pwalk(all_fips, function(state_code, county_code) {
+  fips <- paste0(state_code, county_code)
+  # Extract only one county from the all county geopackage
+  ogr2ogr(src_datasource_name = '/nfs/qread-data/raw_data/landuse/USA/USA_county_2014_aea.gpkg',
+          dst_datasource_name = glue('{gpkgpath}/county{fips}.gpkg'),
+          overwrite = TRUE, f = 'GPKG', where = glue('fips=\'{fips}\''))
+  # Project the single county GPKG to the geographic CRS used by Facebook
+  ogr2ogr(src_datasource_name = glue('{gpkgpath}/county{fips}.gpkg'),
+          dst_datasource_name = glue('{gpkgpath}/county{fips}longlat.gpkg'),
+          overwrite = TRUE, f  = 'GPKG', t_srs = raster_proj)
+})
+```
+
+## Clip rasters to study area boundaries
+
+Our dasymetric rasters and the flood risk rasters are already split up by county. So here it's just the wildfire raster, the EPA dasymetric raster, the Facebook raster, and the Huang et al. population grid that are being split up. Also ensure that our dasymetric raster matches the long-lat geographic CRS by creating a new version.
+
+```{r, eval = FALSE}
+tifpath <- "/nfs/qread-data/DASY/countyrasters"
+gpkgpath <- "/nfs/qread-data/DASY/countybounds"
+
+pwalk(all_fips, function(state_code, county_code) {
+  fips <- paste0(state_code, county_code)
+  # Wildfire
+  gdalwarp(srcfile = '/nfs/qread-data/DASY/whp/Data/whp2020_GeoTIF/whp2020_cls_conus.tif',
+           dstfile = glue('{tifpath}/county{fips}_wildfire.tif'),
+           overwrite = TRUE, crop_to_cutline = TRUE,
+           cutline = glue('{gpkgpath}/county{fips}.gpkg'))
+  # EPA Dasymetric
+  gdalwarp(srcfile = '/nfs/qread-data/DASY/epadasy/dasymetric_us_20160208/dasymetric_us_20160208.tif',
+           dstfile = glue('{tifpath}/county{fips}_epadasy.tif'),
+           overwrite = TRUE, crop_to_cutline = TRUE,
+           cutline = glue('{gpkgpath}/county{fips}.gpkg'))
+  # Facebook Dasymetric
+  gdalwarp(srcfile = '/nfs/qread-data/raw_data/facebookpop/population_usa_2019-07-01.vrt',
+           dstfile = glue('{tifpath}/county{fips}_fblonglat.tif'),
+           overwrite = TRUE, crop_to_cutline = TRUE,
+           cutline = glue('{gpkgpath}/county{fips}longlat.gpkg'))
+  # Huang Dasymetric
+  gdalwarp(srcfile = '/nfs/qread-data/DASY/huang_grid/PopGrid.tif',
+           dstfile = glue('{tifpath}/county{fips}_huangdasy.tif'),
+           overwrite = TRUE, crop_to_cutline = TRUE,
+           cutline = glue('{gpkgpath}/county{fips}.gpkg'))
+  # Our dasymetric, crop to cutline with the longlat object
+  gdalwarp(srcfile = glue('/nfs/qread-data/DASY/tifs/neon-dasy-{state_code}-{county_code}.tif'),
+           dstfile = glue('{tifpath}/county{fips}_dasy.tif'),
+           overwrite = TRUE, crop_to_cutline = TRUE, tr = c(30, 30),
+           cutline = glue('{gpkgpath}/county{fips}longlat.gpkg'))
+})
+```
+
+## Read data
+
+Loop through and read the rasters for each county. 
 
 ```{r, message = FALSE, warning = FALSE, results = "hide"}
-countydata <- read_csv('/nfs/qread-data/DASY/countycodesforfb.csv', col_types = 'ccc')
+counties_wildfire <- counties_wildfire %>% mutate(fips = paste0(state_code, county_code))
 tifpath <- '/nfs/qread-data/DASY/countyrasters'
 dasypath <- '/nfs/qread-data/DASY/tifs'
 
-wildfire_rasters <- map(countydata$FIPS, ~ read_stars(glue('{tifpath}/county{.}_wildfire.tif')))
-ourdasy_rasters <- map(countydata$FIPS, ~ read_stars(glue('{dasypath}/neon-dasy-{substr(., 1, 2)}-{substr(., 3, 5)}.tif')))
-epadasy_rasters <- map(countydata$FIPS, ~ read_stars(glue('{tifpath}/county{.}_epadasy.tif')))
-huang_rasters <- map(countydata$FIPS, ~ read_stars(glue('{tifpath}/county{.}_huangdasy.tif')))
-fbpop_rasters <- map(countydata$FIPS, ~ read_stars(glue('{tifpath}/county{.}_fblonglat.tif')))
+wildfire_rasters <- map(counties_wildfire$fips, ~ read_stars(glue('{tifpath}/county{.}_wildfire.tif')))
+ourdasy_rasters_wf <- map(counties_wildfire$fips, ~ read_stars(glue('{dasypath}/neon-dasy-{substr(., 1, 2)}-{substr(., 3, 5)}.tif')))
+epadasy_rasters_wf <- map(counties_wildfire$fips, ~ read_stars(glue('{tifpath}/county{.}_epadasy.tif')))
+huang_rasters_wf <- map(counties_wildfire$fips, ~ read_stars(glue('{tifpath}/county{.}_huangdasy.tif')))
+fbpop_rasters_wf <- map(counties_wildfire$fips, ~ read_stars(glue('{tifpath}/county{.}_fblonglat.tif')))
+
+flood_rasters <- map(counties_flood$wse_filename, raster::raster)
+ourdasy_rasters_fl <- map(counties_flood$fips, ~ read_stars(glue('{dasypath}/neon-dasy-{substr(., 1, 2)}-{substr(., 3, 5)}.tif')))
+epadasy_rasters_fl <- map(counties_flood$fips, ~ read_stars(glue('{tifpath}/county{.}_epadasy.tif')))
+huang_rasters_fl <- map(counties_flood$fips, ~ read_stars(glue('{tifpath}/county{.}_huangdasy.tif')))
+fbpop_rasters_fl <- map(counties_flood$fips, ~ read_stars(glue('{tifpath}/county{.}_fblonglat.tif')))
 ```
 
 Also load the census block group population estimates and geographies. These will be used for the "naive equal weighting" population estimate.
@@ -97,8 +152,6 @@ Also load the census block group population estimates and geographies. These wil
 ```{r, message = FALSE, eval = FALSE}
 get_blockgroup_pop <- function(FIPS, crs) {
  
-  census_api_key(readLines('/research-home/qread/censusapikey.txt')) 
-
   pop <- get_acs(geography = "block group", variables = "B01003_001", 
                  year = 2016, state= substr(FIPS, 1, 2), county = substr(FIPS, 3, 5), 
                  geometry = TRUE)   
@@ -109,29 +162,41 @@ get_blockgroup_pop <- function(FIPS, crs) {
   st_transform(pop, crs = crs)
 }
 
+census_api_key(readLines('/research-home/qread/censusapikey.txt')) 
 crs_wildfire <- st_crs(wildfire_rasters[[1]])
-blockgroup_pops <- map(countydata$FIPS, get_blockgroup_pop, crs = crs_wildfire)
+blockgroup_pops_wf <- map(counties_wildfire$fips, get_blockgroup_pop, crs = crs_wildfire)
+
+crs_flood <- map(flood_rasters, st_crs)
+blockgroup_pops_fl <- map2(counties_flood$fips, crs_flood, get_blockgroup_pop)
 ```
 
 
-## "Polygonize" the environmental raster
+## "Polygonize" the environmental rasters
 
-We will use `st_as_sf()` to convert the wildfire raster to polygons. 
+We will use `st_as_sf()` to convert the wildfire raster and flood raster (converted to binary) to polygons. 
 
 ```{r}
 wildfire_polygons <- map(wildfire_rasters, st_as_sf, as_points = FALSE, merge = TRUE)
+
+wse_notna_raster <- map(wse_rasters, ~ st_as_stars(!is.na(.)))
+wse_notna_poly <- map(wse_rasters, st_as_sf, as_points = FALSE, merge = TRUE)
 ```
 
-Convert the polygons to each of the rasters' coordinate reference systems.
+Convert the polygons to each of the rasters' coordinate reference systems. Correct invalid geometries in the lat-long polygons.
 
 ```{r}
 wildfire_polygons_ourdasycrs <- map(wildfire_polygons, st_transform, crs = st_crs(ourdasy_rasters[[1]]))
 wildfire_polygons_epadasycrs <- map(wildfire_polygons, st_transform, crs = st_crs(epadasy_rasters[[1]]))
 wildfire_polygons_huangcrs <- map(wildfire_polygons, st_transform, crs = st_crs(huang_rasters[[1]]))
-wildfire_polygons_fbpopcrs <- map(wildfire_polygons, st_transform, crs = st_crs(fbpop_rasters[[1]]))
+wildfire_polygons_fbpopcrs <- map(wildfire_polygons, st_transform, crs = st_crs(fbpop_rasters[[1]])) %>%
+  map(st_make_valid)
 
-# Correct invalid geometries in the lat-long polygons
-wildfire_polygons_fbpopcrs <- map(wildfire_polygons_fbpopcrs, st_make_valid)
+flood_polygons_ourdasycrs <- map(wse_notna_poly, st_transform, crs = st_crs(ourdasy_rasters[[1]]))
+flood_polygons_epadasycrs <- map(wse_notna_poly, st_transform, crs = st_crs(epadasy_rasters[[1]]))
+flood_polygons_huangcrs <- map(wse_notna_poly, st_transform, crs = st_crs(huang_rasters[[1]]))
+flood_polygons_fbpopcrs <- map(wse_notna_poly, st_transform, crs = st_crs(fbpop_rasters[[1]])) %>%
+  map(st_make_valid)
+
 ```
 
 
@@ -144,6 +209,11 @@ wildfire_sums_ourdasy <- map2(ourdasy_rasters, wildfire_polygons_ourdasycrs, agg
 wildfire_sums_epadasy <- map2(epadasy_rasters, wildfire_polygons_epadasycrs, aggregate, FUN = sum, na.rm = TRUE)
 wildfire_sums_huang <- map2(huang_rasters, wildfire_polygons_huangcrs, aggregate, FUN = sum, na.rm = TRUE)
 wildfire_sums_fbpop <- map2(fbpop_rasters, wildfire_polygons_fbpopcrs, aggregate, FUN = sum, na.rm = TRUE)
+
+flood_sums_ourdasy <- map2(ourdasy_rasters, flood_polygons_ourdasycrs, aggregate, FUN = sum, na.rm = TRUE)
+flood_sums_epadasy <- map2(epadasy_rasters, flood_polygons_epadasycrs, aggregate, FUN = sum, na.rm = TRUE)
+flood_sums_huang <- map2(huang_rasters, flood_polygons_huangcrs, aggregate, FUN = sum, na.rm = TRUE)
+flood_sums_fbpop <- map2(fbpop_rasters, flood_polygons_fbpopcrs, aggregate, FUN = sum, na.rm = TRUE)
 ```
 
 For the block group populations, we will do it the opposite way (population polygon and wildfire raster). Tabulate wildfire pixels for each block group polygon, and convert to a matrix. Then divide the population of each block group among the classes based on the number of pixels in each class in each block group.
