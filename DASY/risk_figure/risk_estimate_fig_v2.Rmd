@@ -141,6 +141,7 @@ epadasy_rasters_wf <- map(counties_wildfire$fips, ~ read_stars(glue('{tifpath}/c
 huang_rasters_wf <- map(counties_wildfire$fips, ~ read_stars(glue('{tifpath}/county{.}_huangdasy.tif')))
 fbpop_rasters_wf <- map(counties_wildfire$fips, ~ read_stars(glue('{tifpath}/county{.}_fblonglat.tif')))
 
+flood_rasters <- map(counties_flood$wse_filename, read_stars)
 ourdasy_rasters_fl <- map(counties_flood$fips, ~ read_stars(glue('{dasypath}/neon-dasy-{substr(., 1, 2)}-{substr(., 3, 5)}.tif')))
 epadasy_rasters_fl <- map(counties_flood$fips, ~ read_stars(glue('{tifpath}/county{.}_epadasy.tif')))
 huang_rasters_fl <- map(counties_flood$fips, ~ read_stars(glue('{tifpath}/county{.}_huangdasy.tif')))
@@ -168,8 +169,15 @@ blockgroup_pops_wf <- map(counties_wildfire$fips, get_blockgroup_pop, crs = crs_
 
 crs_flood <- map(flood_rasters, st_crs)
 blockgroup_pops_fl <- map2(counties_flood$fips, crs_flood, get_blockgroup_pop)
+
+saveRDS(blockgroup_pops_wf, file = '/nfs/qread-data/DASY/blockgroup_pops_wildfire.RDS')
+saveRDS(blockgroup_pops_fl, file = '/nfs/qread-data/DASY/blockgroup_pops_flood.RDS')
 ```
 
+```{r}
+blockgroup_pops_wf <- readRDS('/nfs/qread-data/DASY/blockgroup_pops_wildfire.RDS')
+blockgroup_pops_fl <- readRDS('/nfs/qread-data/DASY/blockgroup_pops_flood.RDS')
+```
 
 ## "Polygonize" the environmental rasters
 
@@ -213,16 +221,16 @@ Convert the polygons to each of the rasters' coordinate reference systems. Corre
 wildfire_polygons <- readRDS('/nfs/qread-data/DASY/wildfire_polygons.RDS')
 flood_polygons <- readRDS('/nfs/qread-data/DASY/flood_polygons.RDS')
 
-wildfire_polygons_ourdasycrs <- map(wildfire_polygons, st_transform, crs = st_crs(ourdasy_rasters[[1]]))
-wildfire_polygons_epadasycrs <- map(wildfire_polygons, st_transform, crs = st_crs(epadasy_rasters[[1]]))
-wildfire_polygons_huangcrs <- map(wildfire_polygons, st_transform, crs = st_crs(huang_rasters[[1]]))
-wildfire_polygons_fbpopcrs <- map(wildfire_polygons, st_transform, crs = st_crs(fbpop_rasters[[1]])) %>%
+wildfire_polygons_ourdasycrs <- map(wildfire_polygons, st_transform, crs = st_crs(ourdasy_rasters_wf[[1]]))
+wildfire_polygons_epadasycrs <- map(wildfire_polygons, st_transform, crs = st_crs(epadasy_rasters_wf[[1]]))
+wildfire_polygons_huangcrs <- map(wildfire_polygons, st_transform, crs = st_crs(huang_rasters_wf[[1]]))
+wildfire_polygons_fbpopcrs <- map(wildfire_polygons, st_transform, crs = st_crs(fbpop_rasters_wf[[1]])) %>%
   map(st_make_valid)
 
-flood_polygons_ourdasycrs <- map(flood_polygons, st_transform, crs = st_crs(ourdasy_rasters[[1]]))
-flood_polygons_epadasycrs <- map(flood_polygons, st_transform, crs = st_crs(epadasy_rasters[[1]]))
-flood_polygons_huangcrs <- map(flood_polygons, st_transform, crs = st_crs(huang_rasters[[1]]))
-flood_polygons_fbpopcrs <- map(flood_polygons, st_transform, crs = st_crs(fbpop_rasters[[1]])) %>%
+flood_polygons_ourdasycrs <- map(flood_polygons, st_transform, crs = st_crs(ourdasy_rasters_fl[[1]]))
+flood_polygons_epadasycrs <- map(flood_polygons, st_transform, crs = st_crs(epadasy_rasters_fl[[1]]))
+flood_polygons_huangcrs <- map(flood_polygons, st_transform, crs = st_crs(huang_rasters_fl[[1]]))
+flood_polygons_fbpopcrs <- map(flood_polygons, st_transform, crs = st_crs(fbpop_rasters_fl[[1]])) %>%
   map(st_make_valid)
 
 ```
@@ -233,22 +241,45 @@ flood_polygons_fbpopcrs <- map(flood_polygons, st_transform, crs = st_crs(fbpop_
 Now for each of these polygons, sum up the number of individuals. Repeat for each of the population estimates. Again parallelize with rslurm.
 
 ```{r, eval = FALSE}
-sjob_wild_sums <- slurm_apply(function(i) {
-  wildfire_sums_ourdasy <- map2(ourdasy_rasters, wildfire_polygons_ourdasycrs, aggregate, FUN = sum, na.rm = TRUE)
-  wildfire_sums_epadasy <- map2(epadasy_rasters, wildfire_polygons_epadasycrs, aggregate, FUN = sum, na.rm = TRUE)
-  wildfire_sums_huang <- map2(huang_rasters, wildfire_polygons_huangcrs, aggregate, FUN = sum, na.rm = TRUE)
-  wildfire_sums_fbpop <- map2(fbpop_rasters, wildfire_polygons_fbpopcrs, aggregate, FUN = sum, na.rm = TRUE)
-})
+aggregate_by_poly <- function(i, type, suffix) {
+  sums_ourdasy <- aggregate(get(paste0('ourdasy_rasters_', suffix))[[i]], get(paste0(type,'_polygons_ourdasycrs'))[[i]], FUN = sum, na.rm = TRUE) %>%
+    st_as_sf() %>% st_drop_geometry()
+  sums_epadasy <- aggregate(get(paste0('epadasy_rasters_', suffix))[[i]], get(paste0(type,'_polygons_epadasycrs'))[[i]], FUN = sum, na.rm = TRUE) %>%
+    st_as_sf() %>% st_drop_geometry()
+  sums_huang <- aggregate(get(paste0('huang_rasters_', suffix))[[i]], get(paste0(type,'_polygons_huangcrs'))[[i]], FUN = sum, na.rm = TRUE) %>%
+    st_as_sf() %>% st_drop_geometry()
+  sums_fbpop <- aggregate(get(paste0('fbpop_rasters_', suffix))[[i]], get(paste0(type,'_polygons_fbpopcrs'))[[i]], FUN = sum, na.rm = TRUE) %>%
+    st_as_sf() %>% st_drop_geometry()
+  cbind(sums_ourdasy, sums_epadasy, sums_huang, sums_fbpop) %>%
+    setNames(c('our_dasy', 'epa_dasy', 'huang', 'fb'))
+}
 
-wildfire_sums_ourdasy <- map2(ourdasy_rasters, wildfire_polygons_ourdasycrs, aggregate, FUN = sum, na.rm = TRUE)
-wildfire_sums_epadasy <- map2(epadasy_rasters, wildfire_polygons_epadasycrs, aggregate, FUN = sum, na.rm = TRUE)
-wildfire_sums_huang <- map2(huang_rasters, wildfire_polygons_huangcrs, aggregate, FUN = sum, na.rm = TRUE)
-wildfire_sums_fbpop <- map2(fbpop_rasters, wildfire_polygons_fbpopcrs, aggregate, FUN = sum, na.rm = TRUE)
+sjob_wild_sums <- slurm_apply(aggregate_by_poly, data.frame(i = 1:nrow(counties_wildfire)),
+                              type = 'wildfire', suffix = 'wf',
+                              global_objects = c('wildfire_polygons_ourdasycrs', 'wildfire_polygons_epadasycrs',
+                                                 'wildfire_polygons_huangcrs', 'wildfire_polygons_fbpopcrs',
+                                                 'ourdasy_rasters_wf', 'epadasy_rasters_wf',
+                                                 'huang_rasters_wf', 'fbpop_rasters_wf'), 
+                              jobname = 'agg_wf', nodes = 4, cpus_per_node = 2,
+                              pkgs = c('stars', 'sf'))
 
-flood_sums_ourdasy <- map2(ourdasy_rasters, flood_polygons_ourdasycrs, aggregate, FUN = sum, na.rm = TRUE)
-flood_sums_epadasy <- map2(epadasy_rasters, flood_polygons_epadasycrs, aggregate, FUN = sum, na.rm = TRUE)
-flood_sums_huang <- map2(huang_rasters, flood_polygons_huangcrs, aggregate, FUN = sum, na.rm = TRUE)
-flood_sums_fbpop <- map2(fbpop_rasters, flood_polygons_fbpopcrs, aggregate, FUN = sum, na.rm = TRUE)
+wildfire_sums <- get_slurm_out(sjob_wild_sums)
+cleanup_files(sjob_wild_sums)
+
+sjob_flood_sums <- slurm_apply(aggregate_by_poly, data.frame(i = 1:nrow(counties_flood)),
+                              type = 'flood', suffix = 'fl',
+                              global_objects = c('flood_polygons_ourdasycrs', 'flood_polygons_epadasycrs',
+                                                 'flood_polygons_huangcrs', 'flood_polygons_fbpopcrs',
+                                                 'ourdasy_rasters_fl', 'epadasy_rasters_fl',
+                                                 'huang_rasters_fl', 'fbpop_rasters_fl'), 
+                              jobname = 'agg_fl', nodes = 4, cpus_per_node = 2,
+                              pkgs = c('stars', 'sf'))
+
+flood_sums <- get_slurm_out(sjob_flood_sums)
+cleanup_files(sjob_flood_sums)
+
+saveRDS(wildfire_sums, file = '/nfs/qread-data/DASY/sums_wildfire.RDS')
+saveRDS(flood_sums, file = '/nfs/qread-data/DASY/sums_flood.RDS')
 ```
 
 For the wildfire by block group population weighting, we will do it the opposite way (population polygon and wildfire raster). Tabulate wildfire pixels for each block group polygon, and convert to a matrix. Then divide the population of each block group among the classes based on the number of pixels in each class in each block group. 
