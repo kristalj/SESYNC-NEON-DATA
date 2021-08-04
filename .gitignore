@@ -4,4 +4,4 @@
 .Ruserdata
 
 # Compiled html from Rmarkdown
-DASY/*.html
+DASY/**/*.html

@@ -38,10 +38,12 @@ The wildfire risk map is available for the entire contiguous USA but the FEMA fl
 
 What counties are we using?
 
-```{r, echo = FALSE}
+```{r}
 counties_wildfire <- read.csv('/nfs/qread-data/DASY/counties_wildfire.csv', colClasses = 'character')
 counties_flood <- read.csv('/nfs/qread-data/DASY/counties_flood_allfematifs.csv', colClasses = 'character')
+```
 
+```{r, echo = FALSE}
 knitr::kable(counties_wildfire[,1:2], col.names = c('County', 'State'), caption = 'Wildfire risk counties')
 
 counties_flood$county_name <- paste(counties_flood$county_name, 'County')
@@ -64,6 +66,12 @@ library(readr)
 library(ggplot2)
 library(gdalUtils)
 library(rslurm)
+library(tidyr)
+library(grid)
+library(gridExtra)
+
+counties_wildfire <- counties_wildfire %>% mutate(fips = paste0(state_code, county_code))
+
 ```
 
 Here note that the FIPS code has to be put in single quotes for the SQL WHERE. In contrast, when running from the command line I had to put it in double quotes. That took a lot of trial and error to figure out!
@@ -131,7 +139,6 @@ pwalk(all_fips, function(state_code, county_code) {
 Loop through and read the rasters for each county. 
 
 ```{r, message = FALSE, warning = FALSE, results = "hide"}
-counties_wildfire <- counties_wildfire %>% mutate(fips = paste0(state_code, county_code))
 tifpath <- '/nfs/qread-data/DASY/countyrasters'
 dasypath <- '/nfs/qread-data/DASY/tifs'
 
@@ -289,7 +296,7 @@ table_by_polygon <- function(env_raster, bg_pop_poly) {
   map(st_geometry(bg_pop_poly), ~ as.data.frame(table(st_crop(env_raster, .)[[1]], useNA = 'always')))
 }
 
-wildfire_tables_blockgroups <- map2(wildfire_rasters, blockgroup_pops, table_by_polygon)
+wildfire_tables_blockgroups <- map2(wildfire_rasters, blockgroup_pops_wf, table_by_polygon)
 
 sum_classes_blockgroup <- function(pop_table, bg_poly) {
   map_dfr(1:length(pop_table), ~ data.frame(st_drop_geometry(bg_poly[., c('GEOID', 'estimate')]), pop_table[[.]])) %>%
@@ -297,14 +304,16 @@ sum_classes_blockgroup <- function(pop_table, bg_poly) {
     mutate(pop = estimate * Freq / sum(Freq))
 }
 
-wildfire_sums_blockgroups <- map2(wildfire_tables_blockgroups, blockgroup_pops, sum_classes_blockgroup)
+wildfire_sums_blockgroups <- map2(wildfire_tables_blockgroups, blockgroup_pops_wf, sum_classes_blockgroup)
+
+saveRDS(wildfire_sums_blockgroups, file = '/nfs/qread-data/DASY/sums_wildfire_blockgroups.RDS')
 ```
 
-The method for flood sums by block group is different as well. We are using the polygons in both cases.
+The method for flood sums by block group is different as well. We are using the polygons in both cases, and calculating the areas of intersection of block group and flood polygons.
 
 ```{r, eval = FALSE}
-# For blockgroups, instead of aggregating pop raster by flood polygon, instead intersect blockgroup polygon and flood polygon.
 get_blockgroup_sums <- function(bg_pop, env_poly, env_crs) {
+  env_poly <- st_make_valid(env_poly)
   bg_pop %>%
     st_transform(env_crs) %>%
     mutate(area = st_area(.)) %>%
@@ -312,101 +321,204 @@ get_blockgroup_sums <- function(bg_pop, env_poly, env_crs) {
     mutate(area_int = st_area(.))
 }
 
-wse_sums_blockgroup <- map2(blockgroup_pops, wse_notna_poly, env_crs = st_crs(wse_notna_raster[[1]]))
+sjob_flood_block <- slurm_apply(function(i) get_blockgroup_sums(blockgroup_pops_fl[[i]],
+                                                                flood_polygons_ourdasycrs[[i]],
+                                                                st_crs(flood_polygons_ourdasycrs[[1]])),
+                                params = data.frame(i = 1:length(blockgroup_pops_fl)),
+                                global_objects = c('get_blockgroup_sums', 'blockgroup_pops_fl', 'flood_polygons_ourdasycrs'),
+                                jobname = 'floodblock', nodes = 4, cpus_per_node = 2,
+                                pkgs = c('stars', 'sf', 'dplyr'))
 
-```
+flood_sums_blockgroups <- get_slurm_out(sjob_flood_block)
+cleanup_files(sjob_flood_block)
 
-
-```{r, echo = FALSE, eval = FALSE}
-save(wildfire_sums_blockgroups, wildfire_sums_epadasy, wildfire_sums_ourdasy, wildfire_sums_huang, wildfire_sums_fbpop,
-     flood_sums_blockgroups, flood_sums_epadasy, flood_sums_ourdasy, flood_sums_huang, flood_sums_fbpop,
-     file = '/nfs/qread-data/DASY/allrisk_sums_temp.RData')
-```
-
-
-```{r, include = FALSE}
-load('/nfs/qread-data/DASY/allrisk_sums_temp.RData')
+saveRDS(flood_sums_blockgroups, file = '/nfs/qread-data/DASY/sums_flood_blockgroups.RDS')
 ```
 
 
 ## Get grand totals by class for each county
 
-Join the individual polygon population sums with the polygon classes and get the grand totals by class for each county, combining the output into one dataframe. 
+Read the data objects created with Slurm jobs back into R environment.
+
+```{r}
+wildfire_sums <- readRDS(file = '/nfs/qread-data/DASY/sums_wildfire.RDS')
+flood_sums <- readRDS(file = '/nfs/qread-data/DASY/sums_flood.RDS')
+wildfire_sums_blockgroups <- readRDS(file = '/nfs/qread-data/DASY/sums_wildfire_blockgroups.RDS')
+flood_sums_blockgroups <- readRDS(file = '/nfs/qread-data/DASY/sums_flood_blockgroups.RDS')
+
+wildfire_pop_totals <- map_dbl(blockgroup_pops_wf, ~ sum(.$estimate))
+flood_pop_totals <- map_dbl(blockgroup_pops_fl, ~ sum(.$estimate))
+
+counties_wildfire <- mutate(counties_wildfire, total_pop = wildfire_pop_totals)
+counties_flood <- mutate(counties_flood, total_pop = flood_pop_totals)
+
+# Ordered factor facet labels for counties
+counties_wildfire <- counties_wildfire %>%
+  mutate(total_pop = wildfire_pop_totals,
+         county_label = glue('{county_name}, {state_name} ({as.character(as.integer(signif(total_pop, 3)))})'),
+         county_label = factor(county_label, levels = county_label[order(total_pop)]))
+
+counties_flood <- counties_flood %>%
+  mutate(total_pop = flood_pop_totals,
+         county_label = glue('{county_name}, {state_name} ({as.character(as.integer(signif(total_pop, 3)))})'),
+         county_label = factor(county_label, levels = county_label[order(total_pop)]))
+```
+
+Calculate grand totals of the wildfire risk classes for each county.
 
 ```{r, message = FALSE}
-grandtotal_classes <- function(env_poly, pop_raster) {
-  data.frame(env_class = env_poly[[1]], pop = pop_raster[[1]]) %>%
+grandtotal_classes <- function(env_poly, pop_sums) {
+  data.frame(env_class = env_poly[[1]], pop_sums) %>%
+    mutate(env_class = as.character(env_class)) %>%
     group_by(env_class) %>%
-    summarize(pop = sum(pop))
+    summarize_all(sum, na.rm = TRUE)
 }
 
-wildfire_grandtotals_ourdasy <- map2(wildfire_polygons_ourdasycrs, wildfire_sums_ourdasy, grandtotal_classes)
-wildfire_grandtotals_epadasy <- map2(wildfire_polygons_epadasycrs, wildfire_sums_epadasy, grandtotal_classes)
-wildfire_grandtotals_huang <- map2(wildfire_polygons_huangcrs, wildfire_sums_huang, grandtotal_classes)
-wildfire_grandtotals_fbpop <- map2(wildfire_polygons_fbpopcrs, wildfire_sums_fbpop, grandtotal_classes)
+wildfire_grandtotals <- map2(wildfire_polygons, wildfire_sums, grandtotal_classes)
 
 wildfire_grandtotals_blockgroups <- map(wildfire_sums_blockgroups, function(dat) {
   dat %>%
     rename(env_class = Var1) %>%
+    mutate(env_class = as.character(env_class)) %>%
     group_by(env_class) %>%
-    summarize(pop = sum(pop))
+    summarize(blockgroup = sum(pop))
 })
 
-make_long_data <- function(grandtotals, estimate_name) {
-  countydata %>%
-    as_tibble %>%
-    mutate(estimate = estimate_name) %>%
-    mutate(listcol = grandtotals) %>%
-    tidyr::unnest(cols = listcol)
+wildfire_grandtotals <- map2(wildfire_grandtotals, wildfire_grandtotals_blockgroups, full_join)
+
+wildfire_grandtotals <- counties_wildfire %>% 
+  mutate(listcol = wildfire_grandtotals) %>%
+  unnest(cols = listcol)
+```
+
+Do the same for flood groups.
+
+```{r, message = FALSE}
+flood_grandtotals <- map2(flood_polygons, flood_sums, grandtotal_classes)
+
+get_blockgroup_grandtotals <- function(env_sums) {
+  env_sums %>%
+    st_drop_geometry() %>%
+    rename_with(~ 'env_class', ends_with('tif') | contains('layer')) %>%
+    mutate(env_class = as.character(env_class)) %>%
+    group_by(env_class) %>%
+    summarize(blockgroup = as.numeric(sum(estimate * area_int/area)))
 }
 
-wildfire_risks <- rbind(
-  make_long_data(wildfire_grandtotals_ourdasy, 'our dasymetric'),
-  make_long_data(wildfire_grandtotals_epadasy, 'EPA dasymetric'),
-  make_long_data(wildfire_grandtotals_epadasy, 'Huang et al. population grid'),
-  make_long_data(wildfire_grandtotals_fbpop, 'Facebook pop map'),
-  make_long_data(wildfire_grandtotals_blockgroups, 'Census block group equal weighting')
-)
+flood_grandtotals_blockgroups <- map(flood_sums_blockgroups, get_blockgroup_grandtotals)
+
+flood_grandtotals <- map2(flood_grandtotals, flood_grandtotals_blockgroups, full_join)
+
+flood_grandtotals <- counties_flood %>% 
+  mutate(listcol = flood_grandtotals) %>%
+  unnest(cols = listcol)
 ```
 
-```{r, echo = FALSE, eval = FALSE}
-write_csv(wildfire_risks, '/nfs/qread-data/DASY/wildfire_risk_totals.csv')
-```
-
-## Process data some more
-
-Get rid of classes 6 and 7 which are unknown. Then normalize the totals so that we can compare them among counties with different populations. Also order the counties by population.
+## Get population proportions
 
 ```{r}
-pop_order <- c('Gove, KS', 'Quitman, MS', 'Coos, NH', 'Gallatin, MT', 'La Salle, IL', 'Durham, NC', 'Ada, ID', 'Anne Arundel, MD', 'Denver, CO', 'New York, NY', 'Los Angeles, CA')
+wildfire_risks <- wildfire_grandtotals %>%
+  mutate(across(c(our_dasy, epa_dasy, huang, fb, blockgroup), ~ ./total_pop))
 
-wildfire_risks <- wildfire_risks %>%
-  mutate(county_name = factor(glue('{county_name}, {state_name}'), levels = pop_order)) %>%
-  filter(!env_class %in% 6:7, !is.na(env_class)) %>%
-  group_by(estimate, county_name) %>%
-  mutate(pop_proportion = pop/sum(pop))
+flood_risks <- flood_grandtotals %>%
+  mutate(across(c(our_dasy, epa_dasy, huang, fb, blockgroup), ~ ./total_pop))
 ```
 
 ## Make a figure
 
-```{r out.width="100%"}
-ggplot(wildfire_risks, aes(x = env_class, y = pop_proportion, fill = estimate)) +
+```{r out.width="100%", message = FALSE}
+label_names <- c('This study', 'U.S. EPA', 'Huang et al.', 'Facebook', 'Block group area weighting')
+estimate_labels <- data.frame(estimate = c('our_dasy', 'epa_dasy', 'huang', 'fb', 'blockgroup'),
+                              estimate_label = factor(label_names, levels = label_names))
+
+wildfire_risks_long <- wildfire_risks %>%
+  filter(env_class %in% as.character(1:5)) %>%
+  select(county_label, env_class, our_dasy, epa_dasy, huang, fb, blockgroup) %>%
+  pivot_longer(c(our_dasy, epa_dasy, huang, fb, blockgroup), names_to = 'estimate', values_to = 'proportion') %>%
+  left_join(estimate_labels)
+
+ggplot(wildfire_risks_long, 
+       aes(x = env_class, y = proportion, fill = estimate_label)) +
   geom_col(position = 'dodge') +
-  facet_wrap(~ county_name) +
+  facet_wrap(~ county_label) +
   scale_x_discrete(name = 'Wildfire risk', labels = c('very low', 'low', 'med', 'high', 'very high')) +
-  scale_y_continuous(name = 'Population proportion', limits = c(0, 1), expand = expansion(mult = c(0, 0.01))) +
-  scale_fill_brewer(palette = 'Dark2', labels = function(x) stringr::str_wrap(x, width = 15)) +
+  scale_y_continuous(name = 'Population proportion', limits = c(0, 0.6), expand = expansion(mult = c(0, 0))) +
+  scale_fill_brewer(name = 'Dasymetric method', palette = 'Dark2', labels = function(x) stringr::str_wrap(x, width = 15)) +
   theme_bw() +
   theme(strip.background = element_blank(),
         legend.position = c(0.9, 0.1),
         axis.text.x = element_text(size = rel(0.75)))
 ```
 
-Some initial thoughts on the figure:
+```{r out.width="100%"}
+flood_risks_long <- flood_risks %>%
+  select(county_label, env_class, our_dasy, epa_dasy, huang, fb, blockgroup) %>%
+  pivot_longer(c(our_dasy, epa_dasy, huang, fb, blockgroup), names_to = 'estimate', values_to = 'proportion') %>%
+  left_join(estimate_labels)
 
-There seems to be at least a modest difference in inference depending on population estimation method. For instance, in Denver County, our dasymetric estimate puts more people in the "very low" and "medium" categories at the expense of "low", relative to an equal weighting approach. But in Los Angeles County, our dasymetric estimate seems to put more people in the lower risk categories than the equal-weighting approach. Obviously for the areas where fire risk is very low across the board, it doesn't matter. Also notice that the four dasymetric-style estimates all provide very similar inference to one another, but they all tend to be different from the naive equal-weighting approach.
+ggplot(flood_risks_long, 
+       aes(x = env_class, y = proportion, fill = estimate_label)) +
+  geom_col(position = 'dodge') +
+  facet_wrap(~ county_label) +
+  scale_x_discrete(name = 'Flood risk', labels = c('not at risk', 'at risk')) +
+  #scale_y_continuous(name = 'Population proportion', limits = c(0, 0.6), expand = expansion(mult = c(0, 0))) +
+  scale_fill_brewer(name = 'Dasymetric method', palette = 'Dark2', labels = function(x) stringr::str_wrap(x, width = 15)) +
+  theme_bw() +
+  theme(strip.background = element_blank(),
+        legend.position = c(0.9, 0.1),
+        axis.text.x = element_text(size = rel(0.75)))
+```
 
-Final note: there are many NA or unclassified pixels in the wildfire raster for some of the counties, which aren't included in the figure. I believe that is why New York County (Manhattan) is shown as having uniformly high wildfire risk. Most of the pixels there are unclassified and maybe just a few pixels have values there. It might not be the best example to include in the final figure.
+## Final figure, combining five counties for each risk type
+
+This figure will show five counties for each risk type that illustrate the point best. We can also boil down the categories so that there is only one category per figure. For wildfire, it will be proportion of the population at medium or greater risk, and for flood it will be proportion of the population with >0 depth in the WSE 1% flood zone.
+
+```{r, out.width="100%", message = FALSE}
+counties_use_wf <- counties_wildfire$county_label[counties_wildfire$fips %in% c('49009', '35057', '49013', '53007', '04013')]
+wildfire_risks_reduced <- wildfire_risks_long %>%
+  filter(env_class %in% as.character(3:5), county_label %in% counties_use_wf) %>%
+  group_by(county_label, estimate, estimate_label) %>%
+  summarize(proportion = sum(proportion))
+
+counties_use_fl <- counties_flood$county_label[counties_flood$fips %in% c('24019', '13029', '12035', '01003', '24003')]
+flood_risks_reduced <- flood_risks_long %>%
+  filter(env_class %in% '1', county_label %in% counties_use_fl) 
+
+p_wf <- ggplot(wildfire_risks_reduced, aes(x = estimate_label, y = proportion, fill = estimate_label)) +
+  geom_col() +
+  facet_wrap(~ county_label, nrow = 1) +
+  scale_y_continuous(name = 'Population at risk from wildfire', expand = expansion(mult = c(0, 0.01)), labels = scales::percent_format(accuracy = 1)) +
+  scale_fill_brewer(name = 'Dasymetric method', palette = 'Dark2', labels = function(x) stringr::str_wrap(x, width = 15)) +
+  theme_bw() +
+  theme(strip.background = element_blank(),
+        legend.position = c(0.9, 0.6),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.x = element_blank(),
+        panel.grid = element_blank())
+
+p_fl <- ggplot(flood_risks_reduced, aes(x = estimate_label, y = proportion, fill = estimate_label)) +
+  geom_col() +
+  facet_wrap(~ county_label, nrow = 1) +
+  scale_y_continuous(name = 'Population at risk from flooding', expand = expansion(mult = c(0, 0.01)), labels = scales::percent_format(accuracy = 1)) +
+  scale_fill_brewer(name = 'Dasymetric method', palette = 'Dark2', labels = function(x) stringr::str_wrap(x, width = 15)) +
+  theme_bw() +
+  theme(strip.background = element_blank(),
+        legend.position = 'none',
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.x = element_blank(),
+        panel.grid = element_blank())
+
+p_both <- gtable_rbind(ggplotGrob(p_wf), ggplotGrob(p_fl))
+
+grid.draw(p_both)
+
+png('/nfs/qread-data/DASY/figs/wildfire_flood_figure.png', height = 6, width = 12, res = 300, units = 'in')
+grid.draw(p_both)
+dev.off()
+```
+
 
 ## Changelog
 
