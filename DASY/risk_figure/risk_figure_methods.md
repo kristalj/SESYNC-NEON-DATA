@@ -35,8 +35,13 @@ For the block group population polygons, we calculated the areas of intersection
 ## Works cited
 
 Dillon, G., Menakis, J. & Fay, F. (2015). Wildland fire potential: A tool for assessing wildfire risk and fuels management needs. In: Keane, Robert E.; Jolly, Matt; Parsons, Russell; Riley, Karin. Proceedings of the large wildland fires conference; May 19-23, 2014; Missoula, MT. Proc. RMRS-P-73. Fort Collins, CO: U.S. Department of Agriculture, Forest Service, Rocky Mountain Research Station. p. 60-76., 73, 60–76.
+
 Huang, X., Wang, C., Li, Z. & Ning, H. (2021). A 100 m population grid in the CONUS by disaggregating census data with open-source Microsoft building footprints. Big Earth Data, 5, 112–133.
+
 Pickard, B.R., Daniel, J., Mehaffey, M., Jackson, L.E. & Neale, A. (2015). EnviroAtlas: A new geospatial tool to foster ecosystem services science and resource management. Ecosystem Services, 14, 45–55.
+
 Tiecke, T.G., Liu, X., Zhang, A., Gros, A., Li, N., Yetman, G., et al. (2017). Mapping the world population one building at a time. arXiv:1712.05839 [cs].
+
 U.S. Federal Emergency Management Agency (FEMA). (2021). Risk MAP Products | FEMA.gov. Available at: https://www.fema.gov/flood-maps/tools-resources/risk-map/products. Last accessed 10 August 2021.
+
 Zandbergen, P.A. (2011). Dasymetric Mapping Using High Resolution Address Point Datasets. Transactions in GIS, 15, 5–27.
