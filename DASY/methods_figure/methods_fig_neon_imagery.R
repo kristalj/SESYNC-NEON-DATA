@@ -110,9 +110,12 @@ dasy_stars <- st_as_stars(dasy.pop)
 library(ggspatial)
 library(gridExtra)
 
+box_x <- c(-76.61, -76.51)
+box_y <- c(38.90, 38.93)
+
 sercimage_raster <- stack('/nfs/qread-data/DASY/neon_imagery/2017_SERC_3_all_5m_UTM_geo.tif')
 
-plot_box <- st_as_sf(data.frame(x = c(-76.61, -76.51), y = c(38.88, 38.93)), coords = c('x', 'y'), crs = 4326) %>%
+plot_box <- st_as_sf(data.frame(x = box_x, y = box_y), coords = c('x', 'y'), crs = 4326) %>%
   st_transform(crs = aea) %>%
   st_bbox
 
@@ -125,7 +128,7 @@ image_alpha <- 1
 range_pop <- st_crop(pop.projected, plot_box) %>% pull(estimate) %>% range # 690 to 3008
 
 # Get dasymetric population limits inside the plot_box so that we can set appropriate limits on the fill scale.
-plot_box_dasy <- st_as_sf(data.frame(x = c(-76.61, -76.51), y = c(38.88, 38.93)), coords = c('x', 'y'), crs = 4326) %>%
+plot_box_dasy <- st_as_sf(data.frame(x = box_x, y = box_y), coords = c('x', 'y'), crs = 4326) %>%
   st_transform(crs = st_crs(dasy_stars)) %>%
   st_bbox
 max_dasy <- ceiling(max(dasy_stars[plot_box_dasy][[1]], na.rm = TRUE)) # 23
@@ -147,7 +150,6 @@ p3map <- ggplot() +
   annotation_spatial(data = sercimage_raster, alpha = image_alpha) +
   geom_stars(data = imp_stars) +
   geom_sf(data = pop.projected, color = 'white', alpha = 0.3, fill = NA, size = 0.3) +
-  #scale_fill_brewer(name = 'surface type', palette = 'Set2', labels = c('road (discarded)', 'non-road (kept)'), na.value = 'transparent', na.translate = FALSE) +
   scale_fill_manual(name = 'surface type    ', labels = c('road (discarded)    ', 'non-road (kept)    '), na.value = 'transparent', na.translate = FALSE, values = rev(colorspace::diverging_hcl(palette='Berlin',n=2))) +
   mapcoord + maptheme 
 
@@ -161,7 +163,7 @@ p4map <- ggplot() +
 # Bind together so that main panels line up.
 # Note: extra spaces added at the end of all the legend names and values as a workaround to the odd overlapping of text and boxes
 allmaps <- gtable_cbind(ggplotGrob(p1map), ggplotGrob(p2map), ggplotGrob(p3map), ggplotGrob(p4map))
-ggsave('/nfs/qread-data/DASY/figs/methods_figure_draft_edgewater_neon.png', allmaps, height = 5, width = 14, dpi = 300)
+ggsave('/nfs/qread-data/DASY/figs/methods_figure_draft_edgewater_neon.png', allmaps, height = 4, width = 14, dpi = 300)
 
 # # Alternative method of binding panels, with cowplot
 # allmaps <- cowplot::plot_grid(p1map, p2map, p3map, p4map, nrow = 1, align = 'h')

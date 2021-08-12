@@ -5,3 +5,7 @@
 
 # Compiled html from Rmarkdown
 DASY/**/*.html
+
+# Symlink
+DASY/risk_figure/DASY
+

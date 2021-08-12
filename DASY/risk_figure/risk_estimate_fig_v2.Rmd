@@ -34,7 +34,7 @@ The population estimates we're using for now are:
 
 I took the SRS of counties in a separate script. It isn't too important which counties are used because this is just illustrative. For the wildfire risk, I took all counties in the eleven Western states (WA, OR, CA, ID, NV, MT, WY, CO, UT, AZ, NM) and divided them up by population quintile (5 groups). I selected three random counties from each quintile. I did the same for flood risk except I used only coastal states in the lower 48 (both Atlantic and Pacific coasts). I had to sample quite a few counties to get to 10 counties that actually had flood risk rasters available from FEMA, so they are not perfectly divided among the quintiles. But there is a decent spread of population.
 
-The wildfire risk map is available for the entire contiguous USA but the FEMA flood risk maps are only available for some of the counties. I went to the FEMA site and searched each county manually to get the data. I got data for ten of the counties which should be plenty for our case study.
+The wildfire risk map is available for the entire contiguous USA but the FEMA flood risk maps are only available for some of the counties. I went to the FEMA site and searched each county manually to get the data. Many coastal counties do not have the water surface elevation for 100-year flood event data product available in GeoTIFF format --- it's also not a random sample because there are a good number of coastal states that do not have the product for any county. After going through a lot of counties, I got data for ten counties which should be plenty for our case study.
 
 What counties are we using?
 
@@ -338,7 +338,7 @@ saveRDS(flood_sums_blockgroups, file = '/nfs/qread-data/DASY/sums_flood_blockgro
 
 ## Get grand totals by class for each county
 
-Read the data objects created with Slurm jobs back into R environment.
+Read the data objects created with Slurm jobs back into R environment. Do some initial processing for the plot labels.
 
 ```{r}
 wildfire_sums <- readRDS(file = '/nfs/qread-data/DASY/sums_wildfire.RDS')
@@ -414,15 +414,27 @@ flood_grandtotals <- counties_flood %>%
   unnest(cols = listcol)
 ```
 
+```{r, echo = FALSE, eval = FALSE}
+write_csv(wildfire_grandtotals, '/nfs/qread-data/DASY/wildfire_grandtotals_finalfig.csv')
+write_csv(flood_grandtotals, '/nfs/qread-data/DASY/flood_grandtotals_finalfig.csv')
+save(list = c('wildfire_grandtotals', 'flood_grandtotals'), file = '/nfs/qread-data/DASY/grandtotals_finalfig.RData')
+```
+
+
 ## Get population proportions
+
+Divide the population in each risk category by the total population (totals for each estimation method may differ).
 
 ```{r}
 wildfire_risks <- wildfire_grandtotals %>%
-  mutate(across(c(our_dasy, epa_dasy, huang, fb, blockgroup), ~ ./total_pop))
+  group_by(county_name, state_name, state_code, county_code, fips, county_label) %>%
+  mutate(across(c(our_dasy, epa_dasy, huang, fb, blockgroup), ~ ./sum(., na.rm = TRUE)))
 
 flood_risks <- flood_grandtotals %>%
-  mutate(across(c(our_dasy, epa_dasy, huang, fb, blockgroup), ~ ./total_pop))
+  group_by(county_name, state_name, state_code, county_code, fips, county_label) %>%
+  mutate(across(c(our_dasy, epa_dasy, huang, fb, blockgroup), ~ ./sum(., na.rm = TRUE)))
 ```
+
 
 ## Make a figure
 
@@ -519,6 +531,7 @@ grid.draw(p_both)
 dev.off()
 ```
 
+I think the figure illustrates that there are reasonably big discrepancies among the methods. Maybe you could qualitatively say that the percent discrepancies are a little bigger for the smaller counties. You can also express it as absolute numbers of people.
 
 ## Changelog
 
