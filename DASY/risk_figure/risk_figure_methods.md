@@ -10,7 +10,7 @@ For the wildfire case study, we took a random sample, stratified by population, 
 
 ### Data sources
 
-We obtained the WHP raster product for the entire contiguous United States, and the 1% flood event WSE product for each of the counties in the case study. We obtained the gridded population estimates for the three comparison methods as raster layers covering the contiguous United States. Finally, we used the previously obtained population estimates for 2016 from the American Community Survey for each of the counties chosen for the case study, as well as the boundaries of each block group as a polygon layer. Locations where we downloaded each data product are in the supplemental table below.
+We obtained the WHP raster product for the entire contiguous United States, and the 1% flood event WSE product for each of the counties in the case study. We obtained the gridded population estimates for the three comparison methods as raster layers covering the contiguous United States. Finally, we used the previously obtained population estimates for 2016 from the American Community Survey for each of the counties chosen for the case study, as well as the boundaries of each block group as a polygon layer (see method section in main text for references). Locations where we downloaded each data product are in the supplemental table below.
 
 ### Initial raster processing
 
