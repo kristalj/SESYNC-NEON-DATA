@@ -91,7 +91,7 @@ It does the following steps for a single county (described more fully above):
 - Masks out pixels with <1% impervious surface, pixels in blocks with zero population in 2010, and pixels identified as roads
 - Sums remaining impervious surface area for each block group
 - For each remaining impervious surface area pixel, generates dasymetric population estimate by multiplying block group population by fraction of block group impervious area contained within that pixel
-- Writes the result to a GeoTiff file
+- Writes the result to a GeoTIFF file
 
 ```{r, eval = FALSE}
 Get_Dasy_Data <- function(stid, ctyid) {
@@ -397,14 +397,26 @@ filename = as.character(glue("DASY/tifs/neon-dasy-{stid}-{ctyid}.tif"))
 writeRaster(dasy.pop, filename, overwrite = TRUE) # Will overwrite existing file with the same name.
 ```
 
-## Mosaic rasters
+## Correct missing data values
 
-The following code block is a set of Bash shell commands to mosaic the county-level GeoTiffs together as a virtual raster with `gdalbuildvrt`,
-and as a GeoTiff with `gdal_merge.py`.
+After the GeoTIFFs were generated, we manually replaced the `nodata` values in each GeoTIFF with `-9999` so that they can be merged into a single large GeoTIFF.
 
 ```{bash, eval = FALSE}
-cd DASY/tifs
-gdalbuildvrt dasy_conus_2021-08-12.vrt *.tif
-gdal_merge.py -o dasy_conus_2021-08-12.tif -of GTiff -co COMPRESS=LZW -co BIGTIFF=YES -n -3.39999999999999996e+38 neon-dasy-*.tif
+mkdir DASY/tifs_corrected
+infiles=`cd DASY/tifs && echo neon-dasy-*.tif`
+for tiffile in $infiles; do
+  gdalwarp -dstnodata -9999 -co COMPRESS=LZW DASY/tifs/$tiffile DASY/tifs_corrected/$tiffile
+done
+```
+
+
+## Mosaic rasters
+
+The following code block is a set of Bash shell commands to mosaic the county-level GeoTIFF together as a virtual raster with `gdalbuildvrt`. Next, `gdal_translate` converts the virtual raster to a single large GeoTIFF
+
+```{bash, eval = FALSE}
+cd DASY/tifs_corrected
+gdalbuildvrt dasy_conus_2021-08-17.vrt *.tif
+gdal_translate -co COMPRESS=LZW -co BIGTIFF=YES -of GTiff dasy_conus_2021-08-17.vrt dasy_conus_2021-08-17.tif
 ```
 
