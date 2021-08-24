@@ -6,6 +6,8 @@
 # QDR modified 12 July 2021
 # - debugged the reclass table/ project raster part
 # - changed filepaths so Q can run code
+# QDR modified 24 August 2021
+# - changed the masking for impervious <1%, zero-pop blocks, non-impervious, and road pixels to 0 instead of NA masks
 
 # =========================
 # BEGIN FUNCTION DEFINITION
@@ -43,14 +45,16 @@ Get_Dasy_Data <- function(stid, ctyid){
                             year = 2010, state = stid, county = ctyid, 
                             geometry = TRUE) %>% filter(value == 0) %>% st_transform(., aea)
   
-   #Remove NLCD data <=1% (masking no longer necessary as it's already masked)
-  lu[lu <= 1] <- NA
+  # Mask NLCD impervious raster to county boundaries
+  lu <- mask(lu, as(pop.projected, "Spatial"))
+  # Remove NLCD data <=1% (set to zero)
+  lu[lu <= 1] <- 0
   
   #create lu ratio
   lu.ratio <- lu/100
   
-  #mask out zero pop blocks
-  lu.ratio.zp <- mask(lu.ratio, as(zero.pop, "Spatial"), inverse=TRUE)
+  #mask out zero pop blocks (set to zero)
+  lu.ratio.zp <- mask(lu.ratio, as(zero.pop, "Spatial"), inverse = TRUE, updatevalue = 0)
   
   #get the impervious surface descriptor dataset from: https://www.mrlc.gov/data?f%5B0%5D=category%3ALand%20Cover&f%5B1%5D=category%3AUrban%20Imperviousness&f%5B2%5D=year%3A2016
   # Now VRT is used.
@@ -66,7 +70,7 @@ Get_Dasy_Data <- function(stid, ctyid){
   imp.roads.p <- projectRaster(imp.roads, lu.ratio.zp, method = 'ngb') # have to reproject the descriptor file
   #Mask out roads (i.e, all NonNA values in imp.roads.p)
   RISA <- overlay(lu.ratio.zp, imp.roads.p, fun = function(x, y) {
-    x[!is.na(y[])] <- NA
+    x[!is.na(y[])] <- 0
     return(x)
   })
   
@@ -81,9 +85,9 @@ Get_Dasy_Data <- function(stid, ctyid){
   dasy.pop <- (bg.sum.pop/bg.sum.RISA) * RISA
   
   #this is where will put the file path for rswanwick public data 
-  my_filename = as.character(glue("/nfs/qread-data/DASY/tifs/neon-dasy-{stid}-{ctyid}.tif"))
+  filename = as.character(glue("/nfs/qread-data/DASY/tifs/neon-dasy-{stid}-{ctyid}.tif"))
   
-  writeRaster(dasy.pop, my_filename, overwrite = TRUE) # Will overwrite existing file with the same name.
+  writeRaster(dasy.pop, filename, overwrite = TRUE, NAflag = -9999) # Will overwrite existing file with the same name.
   
   message(glue("saved raster with stid {stid} and ctyid {ctyid}. Onto the next one!"))
   

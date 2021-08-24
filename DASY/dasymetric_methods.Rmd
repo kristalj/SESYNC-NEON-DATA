@@ -87,8 +87,8 @@ It does the following steps for a single county (described more fully above):
 
 - Obtains 2016 ACS block group populations and 2010 decennial Census block populations using Census Bureau API
 - Removes invalid geometries and projects block group geographies to Albers equal-area
-- Clips 2016 NLCD impervious percentage raster to the county area
-- Masks out pixels with <1% impervious surface, pixels in blocks with zero population in 2010, and pixels identified as roads
+- Masks 2016 NLCD impervious percentage and impervious descriptor rasters to the county area
+- Sets pixels to zero population that are <1% impervious surface, in blocks with zero population in 2010, or identified as roads
 - Sums remaining impervious surface area for each block group
 - For each remaining impervious surface area pixel, generates dasymetric population estimate by multiplying block group population by fraction of block group impervious area contained within that pixel
 - Writes the result to a GeoTIFF file
@@ -124,14 +124,16 @@ Get_Dasy_Data <- function(stid, ctyid) {
                             year = 2010, state = stid, county = ctyid, 
                             geometry = TRUE) %>% filter(value == 0) %>% st_transform(., aea)
   
-  #Remove NLCD data <=1% 
-  lu[lu <= 1] <- NA
+  # Mask NLCD impervious raster to county boundaries
+  lu <- mask(lu, as(pop.projected, "Spatial"))
+  # Remove NLCD data <=1% (set to zero)
+  lu[lu <= 1] <- 0
   
   #create lu ratio
   lu.ratio <- lu/100
   
-  #mask out zero pop blocks
-  lu.ratio.zp <- mask(lu.ratio, as(zero.pop, "Spatial"), inverse=TRUE)
+  #mask out zero pop blocks (set to zero)
+  lu.ratio.zp <- mask(lu.ratio, as(zero.pop, "Spatial"), inverse = TRUE, updatevalue = 0)
   
   # impervious surface descriptor dataset 
   imp.surf.desc <- raster("NLCD/NLCD_2016_Impervious_descriptor_L48_20190405/NLCD_2016_impervious.vrt")
@@ -145,7 +147,7 @@ Get_Dasy_Data <- function(stid, ctyid) {
   imp.roads.p <- projectRaster(imp.roads, lu.ratio.zp, method = 'ngb') # have to reproject the descriptor file
   #Mask out roads (i.e, all NonNA values in imp.roads.p)
   RISA <- overlay(lu.ratio.zp, imp.roads.p, fun = function(x, y) {
-    x[!is.na(y[])] <- NA
+    x[!is.na(y[])] <- 0
     return(x)
   })
   
@@ -280,14 +282,16 @@ zero.pop <- get_decennial(geography = "block", variables = "P001001",
                           year = 2010, state = stid, county = ctyid, 
                           geometry = TRUE) %>% filter(value == 0) %>% st_transform(., proj4string(lu))
 
-#Remove NLCD data <=1% 
-lu[lu <= 1] <- NA
+# Mask NLCD impervious raster to county boundaries
+lu <- mask(lu, as(pop.projected, "Spatial"))
+# Remove NLCD data <=1% (set to zero)
+lu[lu <= 1] <- 0
 
 #create lu ratio
 lu.ratio <- lu/100
 
-#mask out zero pop blocks
-lu.ratio.zp <- mask(lu.ratio, as(zero.pop, "Spatial"), inverse=TRUE)
+#mask out zero pop blocks (set to zero)
+lu.ratio.zp <- mask(lu.ratio, as(zero.pop, "Spatial"), inverse = TRUE, updatevalue = 0)
 
 imp.surf.desc <- raster("NLCD/NLCD_2016_Impervious_descriptor_L48_20190405/NLCD_2016_impervious.vrt")
 #mask out primary, secondary, and urban tertiary roads
@@ -301,7 +305,7 @@ imp.roads <- reclassify(imp.surf.mask, reclass.table, right = NA)
 imp.roads.p <- projectRaster(imp.roads, lu.ratio.zp, method = 'ngb') # have to reproject the descriptor file
 #Mask out roads (i.e, all NonNA values in imp.roads.p)
 RISA <- overlay(lu.ratio.zp, imp.roads.p, fun = function(x, y) {
-  x[!is.na(y[])] <- NA
+  x[!is.na(y[])] <- 0
   return(x)
 })
 
@@ -358,14 +362,16 @@ ggplot() +
 
 zero.pop <- bind_rows(zero.pop.bedfordcity, zero.pop.bedfordcounty)
 
-#Remove NLCD data <=1% 
-lu[lu <= 1] <- NA
+# Mask NLCD impervious raster to county boundaries
+lu <- mask(lu, as(pop.projected, "Spatial"))
+# Remove NLCD data <=1% (set to zero)
+lu[lu <= 1] <- 0
 
 #create lu ratio
 lu.ratio <- lu/100
 
-#mask out zero pop blocks
-lu.ratio.zp <- mask(lu.ratio, as(zero.pop, "Spatial"), inverse=TRUE)
+#mask out zero pop blocks (set to zero)
+lu.ratio.zp <- mask(lu.ratio, as(zero.pop, "Spatial"), inverse = TRUE, updatevalue = 0)
 
 imp.surf.desc <- raster("NLCD/NLCD_2016_Impervious_descriptor_L48_20190405/NLCD_2016_impervious.vrt")
 imp.surf.crop <- raster::crop(imp.surf.desc, spTransform(as(pop.projected, "Spatial"), CRSobj = proj4string(imp.surf.desc))) #crop imp surface to county
@@ -378,7 +384,7 @@ imp.roads <- reclassify(imp.surf.mask, reclass.table, right = NA)
 imp.roads.p <- projectRaster(imp.roads, lu.ratio.zp, method = 'ngb') # have to reproject the descriptor file
 #Mask out roads (i.e, all NonNA values in imp.roads.p)
 RISA <- overlay(lu.ratio.zp, imp.roads.p, fun = function(x, y) {
-  x[!is.na(y[])] <- NA
+  x[!is.na(y[])] <- 0
   return(x)
 })
 
@@ -398,6 +404,8 @@ writeRaster(dasy.pop, filename, overwrite = TRUE) # Will overwrite existing file
 ```
 
 ## Correct missing data values
+
+FIXME THIS MAY NO LONGER BE NECESSARY
 
 After the GeoTIFFs were generated, we manually replaced the `nodata` values in each GeoTIFF with `-9999` so that they can be merged into a single large GeoTIFF.
 

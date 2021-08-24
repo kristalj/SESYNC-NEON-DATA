@@ -1,5 +1,6 @@
 # Fix issues with the three counties that did not run.
 # Updated 10 Dec 2020 to reflect new changes to Get_Dasy_Data.R
+# Updated 24 Aug 2021 to fix masking error
 
 bad_counties <- data.frame(stid = c('46','46','51'),
                            ctyid = c('102', '113', '515'))
@@ -55,14 +56,16 @@ zero.pop <- get_decennial(geography = "block", variables = "P001001",
                           year = 2010, state = stid, county = ctyid, 
                           geometry = TRUE) %>% filter(value == 0) %>% st_transform(., proj4string(lu))
 
-#Remove NLCD data <=1% (masking no longer necessary as it's already masked)
-lu[lu <= 1] <- NA
+# Mask NLCD impervious raster to county boundaries
+lu <- mask(lu, as(pop.projected, "Spatial"))
+# Remove NLCD data <=1% (set to zero)
+lu[lu <= 1] <- 0
 
 #create lu ratio
 lu.ratio <- lu/100
 
-#mask out zero pop blocks
-lu.ratio.zp <- mask(lu.ratio, as(zero.pop, "Spatial"), inverse=TRUE)
+#mask out zero pop blocks (set to zero)
+lu.ratio.zp <- mask(lu.ratio, as(zero.pop, "Spatial"), inverse = TRUE, updatevalue = 0)
 
 #get the impervious surface descriptor dataset from: https://www.mrlc.gov/data?f%5B0%5D=category%3ALand%20Cover&f%5B1%5D=category%3AUrban%20Imperviousness&f%5B2%5D=year%3A2016
 # Now VRT is used.
@@ -78,7 +81,7 @@ imp.roads <- reclassify(imp.surf.mask, reclass.table, right = NA)
 imp.roads.p <- projectRaster(imp.roads, lu.ratio.zp, method = 'ngb') # have to reproject the descriptor file
 #Mask out roads (i.e, all NonNA values in imp.roads.p)
 RISA <- overlay(lu.ratio.zp, imp.roads.p, fun = function(x, y) {
-  x[!is.na(y[])] <- NA
+  x[!is.na(y[])] <- 0
   return(x)
 })
 
@@ -92,9 +95,9 @@ bg.sum.RISA <- fasterize::fasterize(pop.df, RISA, field = "RISA.sum.layer")
 #generate density (people/30 m pixel)
 dasy.pop <- (bg.sum.pop/bg.sum.RISA) * RISA
 
-my_filename = as.character(glue("/nfs/qread-data/DASY/tifs/neon-dasy-{stid}-102.tif"))
+filename = as.character(glue("/nfs/qread-data/DASY/tifs/neon-dasy-{stid}-102.tif"))
 
-writeRaster(dasy.pop, my_filename, overwrite = TRUE) # Will overwrite existing file with the same name.
+writeRaster(dasy.pop, filename, overwrite = TRUE, NAflag = -9999) # Will overwrite existing file with the same name.
 
 
 # Manual fix for Virginia -------------------------------------------------
@@ -138,14 +141,16 @@ ggplot() +
 
 zero.pop <- bind_rows(zero.pop.bedfordcity, zero.pop.bedfordcounty)
 
-#Remove NLCD data <=1% (masking no longer necessary as it's already masked)
-lu[lu <= 1] <- NA
+# Mask NLCD impervious raster to county boundaries
+lu <- mask(lu, as(pop.projected, "Spatial"))
+# Remove NLCD data <=1% (set to zero)
+lu[lu <= 1] <- 0
 
 #create lu ratio
 lu.ratio <- lu/100
 
-#mask out zero pop blocks
-lu.ratio.zp <- mask(lu.ratio, as(zero.pop, "Spatial"), inverse=TRUE)
+#mask out zero pop blocks (set to zero)
+lu.ratio.zp <- mask(lu.ratio, as(zero.pop, "Spatial"), inverse = TRUE, updatevalue = 0)
 
 #get the impervious surface descriptor dataset from: https://www.mrlc.gov/data?f%5B0%5D=category%3ALand%20Cover&f%5B1%5D=category%3AUrban%20Imperviousness&f%5B2%5D=year%3A2016
 # Now VRT is used.
@@ -160,7 +165,7 @@ imp.roads <- reclassify(imp.surf.mask, reclass.table, right = NA)
 imp.roads.p <- projectRaster(imp.roads, lu.ratio.zp, method = 'ngb') # have to reproject the descriptor file
 #Mask out roads (i.e, all NonNA values in imp.roads.p)
 RISA <- overlay(lu.ratio.zp, imp.roads.p, fun = function(x, y) {
-  x[!is.na(y[])] <- NA
+  x[!is.na(y[])] <- 0
   return(x)
 })
 
@@ -175,6 +180,6 @@ bg.sum.RISA <- fasterize::fasterize(pop.df, RISA, field = "RISA.sum.layer")
 dasy.pop <- (bg.sum.pop/bg.sum.RISA) * RISA
 
 #this is where will put the file path for rswanwick public data 
-my_filename = as.character(glue("/nfs/qread-data/DASY/tifs/neon-dasy-{stid}-{ctyid}.tif"))
+filename = as.character(glue("/nfs/qread-data/DASY/tifs/neon-dasy-{stid}-{ctyid}.tif"))
 
-writeRaster(dasy.pop, my_filename, overwrite = TRUE) # Will overwrite existing file with the same name.
+writeRaster(dasy.pop, filename, overwrite = TRUE, NAflag = -9999) # Will overwrite existing file with the same name.
