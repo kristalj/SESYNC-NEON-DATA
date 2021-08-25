@@ -80,6 +80,20 @@ The code ran in approximately 24 hours across 7 cluster nodes, each with 8 proce
 
 The following code carries out the steps described above. 
 
+## Pre-processing: create virtual raster for NLCD
+
+This allows parallel reads to be done on the NLCD raster so that multiple counties can be processed at the same time.
+
+```{r, eval = FALSE}
+library(gdalUtils)
+
+direc <- 'NLCD/NLCD_2016_Impervious_descriptor_L48_20190405'
+raster_file <- "NLCD_2016_Impervious_descriptor_L48_20190405.img"
+
+# Run gdalbuildvrt with all defaults to just create a VRT that points to the IMG without any modification
+gdalbuildvrt(gdalfile = file.path(direc, raster_file), output.vrt = file.path(direc, 'NLCD_2016_impervious.vrt'))
+```
+
 ## Function to create dasymetric population map for a single county
 
 The following function takes two inputs: the state FIPS code as a two-character string `stid`, and the county FIPS code as a three-character string `ctyid`. 
@@ -163,7 +177,7 @@ Get_Dasy_Data <- function(stid, ctyid) {
   
   filename = glue("DASY/tifs/neon-dasy-{stid}-{ctyid}.tif")
   
-  writeRaster(dasy.pop, filename, overwrite = TRUE) # Will overwrite existing file with the same name.
+  writeRaster(dasy.pop, filename, overwrite = TRUE, NAflag = -9999) # Will overwrite existing file with the same name.
   
   message(glue("saved raster with stid {stid} and ctyid {ctyid}. On to the next one!"))
   
@@ -321,7 +335,7 @@ dasy.pop <- (bg.sum.pop/bg.sum.RISA) * RISA
 
 filename = as.character(glue("DASY/tifs/neon-dasy-{stid}-102.tif"))
 
-writeRaster(dasy.pop, filename, overwrite = TRUE) # Will overwrite existing file with the same name.
+writeRaster(dasy.pop, filename, overwrite = TRUE, NAflag = -9999) # Will overwrite existing file with the same name.
 
 
 # Manual fix for Virginia -------------------------------------------------
@@ -400,7 +414,7 @@ dasy.pop <- (bg.sum.pop/bg.sum.RISA) * RISA
 
 filename = as.character(glue("DASY/tifs/neon-dasy-{stid}-{ctyid}.tif"))
 
-writeRaster(dasy.pop, filename, overwrite = TRUE) # Will overwrite existing file with the same name.
+writeRaster(dasy.pop, filename, overwrite = TRUE, NAflag = -9999) # Will overwrite existing file with the same name.
 ```
 
 ## Correct missing data values
