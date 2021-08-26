@@ -129,7 +129,7 @@ fipscodes <- filter(fipscodes, !stid %in% not48)
 
 # Remove Shannon County, South Dakota (46113) from the list because it does not exist in 2016 (replaced by 46102, Oglala Lakota County)
 # Also remove Bedford City, Virginia (51515) from the list because it does not exist in 2016 (merged into 51019, Bedford County)
-fipscodes <- filter(fipscodes, !(stid == '46' & ctyid == '113') & !(stid == '51' & ctyid == '515'))
+fipscodes <- filter(fipscodes, !(stid == '46' & ctyid %in% c('102', '113')) & !(stid == '51' & ctyid %in% c('019', '515')))
 
 # Split into a list by state.
 fips_list <- fipscodes %>% group_by(stid) %>% group_split

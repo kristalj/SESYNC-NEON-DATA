@@ -1,7 +1,7 @@
 ---
 title: "Dasymetric methods"
 author: "Quentin D. Read"
-date: "8/12/2021"
+date: "8/26/2021"
 output: html_document
 ---
 
@@ -45,9 +45,9 @@ Next, we clipped the NLCD impervious surface percentage and descriptor rasters t
 
 ## Masking by impervious surface
 
-We masked out all impervious surface pixels with a value less than or equal to 0.01 (less than 1% of the pixel's surface area is impervious).
-Census blocks with zero population in the 2010 decennial census were masked out completely regardless of what impervious surfaces they contained.
-Using the impervious surface descriptor, we masked out all pixels classified as primary, secondary, and tertiary urban roads.
+We set all impervious surface pixels with a value less than or equal to 0.01 to 0 (less than 1% of the pixel's surface area is impervious).
+All pixels in census blocks with zero population in the 2010 decennial census were set to 0 regardless of what impervious surfaces they contained.
+Using the impervious surface descriptor, we set all pixels classified as primary, secondary, and tertiary urban roads to 0.
 
 ## Dasymetric population density estimation
 
@@ -112,7 +112,8 @@ Get_Dasy_Data <- function(stid, ctyid) {
   
   # Albers equal-area projection
   aea <- '+proj=aea +lat_1=29.5 +lat_2=45.5 +lat_0=23 +lon_0=-96 +x_0=0 +y_0=0 +ellps=WGS84 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs'
-
+  
+  # Read Census Bureau API key and get 2016 ACS 5-year block group population estimates
   census_api_key(readLines('censusapikey.txt')) 
 
   pop <- get_acs(geography = "block group", variables = "B01003_001", 
@@ -125,7 +126,7 @@ Get_Dasy_Data <- function(stid, ctyid) {
   # Project population to Albers equal-area
   pop.projected <- st_transform(pop, crs = aea)
   
-  # Use gdalwarp to extract the county area, from the NLCD impervious raster, already in Albers projection
+  # Use gdalwarp to extract the county area, from the NLCD impervious percentage raster, already in Albers projection
   nlcd_imp_vrt <- 'NLCD/VRTs/NLCD_2016_Impervious_L48_20190405.vrt'
   temp_polygon_filename <- as.character(glue("DASY/temp_files/county-{stid}-{ctyid}.gpkg"))
   temp_nlcdraster_filename <- as.character(glue("DASY/temp_files/countynlcd-{stid}-{ctyid}.tif"))
@@ -133,51 +134,57 @@ Get_Dasy_Data <- function(stid, ctyid) {
   gdalwarp(srcfile = nlcd_imp_vrt, dstfile = temp_nlcdraster_filename, cutline = temp_polygon_filename, crop_to_cutline = TRUE, tr = c(30, 30), dstnodata = "None")
   lu <- raster(temp_nlcdraster_filename)
   
-  #download 2010 block-level data, filter for only the blocks with 0 pop
+  # Get 2010 decennial block-level population counts
+  # Filter for only the blocks with 0 population, and project to Albers equal-area
   zero.pop <- get_decennial(geography = "block", variables = "P001001", 
                             year = 2010, state = stid, county = ctyid, 
-                            geometry = TRUE) %>% filter(value == 0) %>% st_transform(., aea)
+                            geometry = TRUE) %>% 
+    filter(value == 0) %>% 
+    st_transform(crs = aea)
   
   # Mask NLCD impervious raster to county boundaries
   lu <- mask(lu, as(pop.projected, "Spatial"))
-  # Remove NLCD data <=1% (set to zero)
+  # Set pixels with impervious percentage <= 1% to 0
   lu[lu <= 1] <- 0
   
-  #create lu ratio
+  # Scale impervious percentages between 0 and 1
   lu.ratio <- lu/100
   
-  #mask out zero pop blocks (set to zero)
+  # Set all pixels in zero-population blocks to 0
   lu.ratio.zp <- mask(lu.ratio, as(zero.pop, "Spatial"), inverse = TRUE, updatevalue = 0)
   
-  # impervious surface descriptor dataset 
+  # Load impervious surface descriptor dataset, mask all pixels outside the county to NA
   imp.surf.desc <- raster("NLCD/NLCD_2016_Impervious_descriptor_L48_20190405/NLCD_2016_impervious.vrt")
-  #mask out primary, secondary, and urban tertiary roads
-  imp.surf.crop <- raster::crop(imp.surf.desc, as(pop.projected, "Spatial")) #crop imp surface to county
-  imp.surf.mask <- raster::mask(imp.surf.crop, as(pop.projected, "Spatial")) #mask all non-county values to NA
+  imp.surf.crop <- crop(imp.surf.desc, as(pop.projected, "Spatial")) 
+  imp.surf.mask <- mask(imp.surf.crop, as(pop.projected, "Spatial")) 
 
-  reclass.table <- matrix(c(1,6,1,7,14,NA), ncol = 3, byrow = TRUE) # reclassify values 1-6 into 1 for keep, drop the rest
+  # Mask out primary, secondary, and urban tertiary roads
+  # Reclassify: keep classes 1-6 (non-road) and drop 7-14 (road)
+  reclass.table <- matrix(c(1,6,1,7,14,NA), ncol = 3, byrow = TRUE) 
   
+  # Reclassify descriptor file and reproject it.
   imp.roads <- reclassify(imp.surf.mask, reclass.table, right = NA)
-  imp.roads.p <- projectRaster(imp.roads, lu.ratio.zp, method = 'ngb') # have to reproject the descriptor file
-  #Mask out roads (i.e, all NonNA values in imp.roads.p)
+  imp.roads.p <- projectRaster(imp.roads, lu.ratio.zp, method = 'ngb') 
+  # Set all road pixels to 0 (all non-NA values in imp.roads.p)
   RISA <- overlay(lu.ratio.zp, imp.roads.p, fun = function(x, y) {
     x[!is.na(y[])] <- 0
     return(x)
   })
   
-  #get the block-group level sum of the remaining impervious surface pixels
-  RISA.sum <- raster::extract(RISA, as(pop.projected,"Spatial"), fun=sum, na.rm=TRUE,df=TRUE)
+  # Get the block group-level sum of the remaining impervious surface pixels
+  RISA.sum <- raster::extract(RISA, as(pop.projected,"Spatial"), fun=sum, na.rm=TRUE, df=TRUE)
   
+  # Rasterize the block group population estimates and impervious surface pixel sums
   pop.df <- cbind(pop.projected, RISA.sum$layer)
-  bg.sum.pop <- fasterize::fasterize(pop.projected, RISA, field = "estimate")
-  bg.sum.RISA <- fasterize::fasterize(pop.df, RISA, field = "RISA.sum.layer")
+  bg.sum.pop <- fasterize(pop.projected, RISA, field = "estimate")
+  bg.sum.RISA <- fasterize(pop.df, RISA, field = "RISA.sum.layer")
   
-  #generate density (people/30 m pixel)
+  # Generate density (people/30 m pixel) and write to file.
   dasy.pop <- (bg.sum.pop/bg.sum.RISA) * RISA
   
-  filename = glue("DASY/tifs/neon-dasy-{stid}-{ctyid}.tif")
+  filename <- glue("DASY/tifs/neon-dasy-{stid}-{ctyid}.tif")
   
-  writeRaster(dasy.pop, filename, overwrite = TRUE, NAflag = -9999) # Will overwrite existing file with the same name.
+  writeRaster(dasy.pop, filename, overwrite = TRUE, NAflag = -9999) 
   
   message(glue("saved raster with stid {stid} and ctyid {ctyid}. On to the next one!"))
   
@@ -199,6 +206,7 @@ library(sf)
 library(glue)
 library(gdalUtils)
 library(rslurm)
+library(fasterize)
 
 # Get the fips codes for all counties
 fipscodes = data_frame(fips_codes)
@@ -215,7 +223,7 @@ fipscodes <- filter(fipscodes, !stid %in% not48)
 
 # Remove Shannon County, South Dakota (46113) from the list because it does not exist in 2016 (replaced by 46102, Oglala Lakota County)
 # Also remove Bedford City, Virginia (51515) from the list because it does not exist in 2016 (merged into 51019, Bedford County)
-fipscodes <- filter(fipscodes, !(stid == '46' & ctyid == '113') & !(stid == '51' & ctyid == '515'))
+fipscodes <- filter(fipscodes, !(stid == '46' & ctyid %in% c('102', '113')) & !(stid == '51' & ctyid %in% c('019', '515')))
 
 # Split into a list by state.
 fips_list <- fipscodes %>% group_by(stid) %>% group_split
@@ -244,30 +252,19 @@ system2('rm', '-r DASY/temp_files/*')
 
 ## Corrections for two inconsistent counties
 
-The following code block manually fixes the inconsistencies in Oglala Lakota County, South Dakota, and Bedford County, Virginia, as described above.
+The following code block manually fixes the inconsistencies in Oglala Lakota County, South Dakota, and Bedford County, Virginia, as described above. 
+Refer to pg. 3 of [this documentation](https://www.ddorn.net/data/FIPS_County_Code_Changes.pdf) to see what happened to those counties since 2010.
+For Oglala Lakota, we download data for FIPS code 46113 for 2010, and 46102 for 2016.
+For Bedford, we merge data from 51515 and 51019 for 2010, and download data for 51019 for 2016.
 
 ```{r, eval = FALSE}
 bad_counties <- data.frame(stid = c('46','46','51'),
                            ctyid = c('102', '113', '515'))
 
-# Refer to pg. 3 of this documentation to see what happened to those counties since 2010:
-# https://www.ddorn.net/data/FIPS_County_Code_Changes.pdf
-
-# between 2010 and 2016, county 46113 (Shannon) was replaced by county 46102 (Oglala Lakota)
-# So the 2010 data exists for county 46113, but not 2016. The opposite is true for county 46102.
-
-# Solution is to manually set it up to download 46113 data for 2010, then 46102 data for 2016.
-
-# For Bedford City, it was an independent city with code 51515 until 2013, when it was incorporated into Bedford County (51019).
-# So it has valid 2010 data but no data for 2016. 
-
-# The solution here would be to use the 2016 data from 51019, and for 2010 merge the 51515 and 51019 data.
-
 census_api_key(readLines('censusapikey.txt'))
 
 # Manual fix for South Dakota ---------------------------------------------
 
-# copied and pasted get_dasy_data and modified.
 # 2016 data is new code.
 stid <- "46"
 ctyid <- "102"
@@ -289,48 +286,54 @@ st_write(st_union(pop.projected), dsn = temp_polygon_filename, driver = 'GPKG')
 gdalwarp(srcfile = nlcd_imp_vrt, dstfile = temp_nlcdraster_filename, cutline = temp_polygon_filename, crop_to_cutline = TRUE, tr = c(30, 30), dstnodata = "None")
 lu <- raster(temp_nlcdraster_filename)
 
-#download 2010 block-level data, filter for only the blocks with 0 pop
-# Use old FIPS code
+# Use old FIPS code for 2010
 ctyid <- "113"
+# Get 2010 decennial block-level population counts
+# Filter for only the blocks with 0 population, and project to Albers equal-area
 zero.pop <- get_decennial(geography = "block", variables = "P001001", 
                           year = 2010, state = stid, county = ctyid, 
-                          geometry = TRUE) %>% filter(value == 0) %>% st_transform(., proj4string(lu))
+                          geometry = TRUE) %>% 
+  filter(value == 0) %>% 
+  st_transform(crs = aea)
 
 # Mask NLCD impervious raster to county boundaries
 lu <- mask(lu, as(pop.projected, "Spatial"))
-# Remove NLCD data <=1% (set to zero)
+# Set pixels with impervious percentage <= 1% to 0
 lu[lu <= 1] <- 0
 
-#create lu ratio
+# Scale impervious percentages between 0 and 1
 lu.ratio <- lu/100
 
-#mask out zero pop blocks (set to zero)
+# Set all pixels in zero-population blocks to 0
 lu.ratio.zp <- mask(lu.ratio, as(zero.pop, "Spatial"), inverse = TRUE, updatevalue = 0)
 
+# Load impervious surface descriptor dataset, mask all pixels outside the county to NA
 imp.surf.desc <- raster("NLCD/NLCD_2016_Impervious_descriptor_L48_20190405/NLCD_2016_impervious.vrt")
-#mask out primary, secondary, and urban tertiary roads
-imp.surf.crop <- raster::crop(imp.surf.desc, spTransform(as(pop.projected, "Spatial"), CRSobj = proj4string(imp.surf.desc))) #crop imp surface to county
-#plot(imp.surf.crop)
-imp.surf.mask <- raster::mask(imp.surf.crop, spTransform(as(pop.projected, "Spatial"), CRSobj = proj4string(imp.surf.desc))) #mask all non-county values to NA
+imp.surf.crop <- crop(imp.surf.desc, as(pop.projected, "Spatial")) 
+imp.surf.mask <- mask(imp.surf.crop, as(pop.projected, "Spatial")) 
 
-reclass.table <- matrix(c(1,6,1,7,14,NA), ncol = 3, byrow = TRUE) # reclassify values 1-6 into 1 for keep, drop the rest
+# Mask out primary, secondary, and urban tertiary roads
+# Reclassify: keep classes 1-6 (non-road) and drop 7-14 (road)
+reclass.table <- matrix(c(1,6,1,7,14,NA), ncol = 3, byrow = TRUE) 
 
+# Reclassify descriptor file and reproject it.
 imp.roads <- reclassify(imp.surf.mask, reclass.table, right = NA)
-imp.roads.p <- projectRaster(imp.roads, lu.ratio.zp, method = 'ngb') # have to reproject the descriptor file
-#Mask out roads (i.e, all NonNA values in imp.roads.p)
+imp.roads.p <- projectRaster(imp.roads, lu.ratio.zp, method = 'ngb') 
+# Set all road pixels to 0 (all non-NA values in imp.roads.p)
 RISA <- overlay(lu.ratio.zp, imp.roads.p, fun = function(x, y) {
   x[!is.na(y[])] <- 0
   return(x)
 })
 
-#get the block-group level sum of the remaining impervious surface pixels
-RISA.sum <- raster::extract(RISA, as(pop.projected,"Spatial"), fun=sum, na.rm=TRUE,df=TRUE)
+# Get the block group-level sum of the remaining impervious surface pixels
+RISA.sum <- raster::extract(RISA, as(pop.projected,"Spatial"), fun=sum, na.rm=TRUE, df=TRUE)
 
+# Rasterize the block group population estimates and impervious surface pixel sums
 pop.df <- cbind(pop.projected, RISA.sum$layer)
-bg.sum.pop <- fasterize::fasterize(pop.projected, RISA, field = "estimate")
-bg.sum.RISA <- fasterize::fasterize(pop.df, RISA, field = "RISA.sum.layer")
+bg.sum.pop <- fasterize(pop.projected, RISA, field = "estimate")
+bg.sum.RISA <- fasterize(pop.df, RISA, field = "RISA.sum.layer")
 
-#generate density (people/30 m pixel)
+# Generate density (people/30 m pixel) and write to file.
 dasy.pop <- (bg.sum.pop/bg.sum.RISA) * RISA
 
 filename = as.character(glue("DASY/tifs/neon-dasy-{stid}-102.tif"))
@@ -358,7 +361,7 @@ st_write(st_union(pop.projected), dsn = temp_polygon_filename, driver = 'GPKG')
 gdalwarp(srcfile = nlcd_imp_vrt, dstfile = temp_nlcdraster_filename, cutline = temp_polygon_filename, crop_to_cutline = TRUE, tr = c(30, 30), dstnodata = "None")
 lu <- raster(temp_nlcdraster_filename)
 
-#download 2010 block-level data, filter for only the blocks with 0 pop
+# Download 2010 block-level data, filter for only the blocks with 0 pop
 # We need to get both the city and county and merge them.
 zero.pop.bedfordcounty <- get_decennial(geography = "block", variables = "P001001", 
                           year = 2010, state = stid, county = ctyid, 
@@ -378,38 +381,42 @@ zero.pop <- bind_rows(zero.pop.bedfordcity, zero.pop.bedfordcounty)
 
 # Mask NLCD impervious raster to county boundaries
 lu <- mask(lu, as(pop.projected, "Spatial"))
-# Remove NLCD data <=1% (set to zero)
+# Set pixels with impervious percentage <= 1% to 0
 lu[lu <= 1] <- 0
 
-#create lu ratio
+# Scale impervious percentages between 0 and 1
 lu.ratio <- lu/100
 
-#mask out zero pop blocks (set to zero)
+# Set all pixels in zero-population blocks to 0
 lu.ratio.zp <- mask(lu.ratio, as(zero.pop, "Spatial"), inverse = TRUE, updatevalue = 0)
 
+# Load impervious surface descriptor dataset, mask all pixels outside the county to NA
 imp.surf.desc <- raster("NLCD/NLCD_2016_Impervious_descriptor_L48_20190405/NLCD_2016_impervious.vrt")
-imp.surf.crop <- raster::crop(imp.surf.desc, spTransform(as(pop.projected, "Spatial"), CRSobj = proj4string(imp.surf.desc))) #crop imp surface to county
-#plot(imp.surf.crop)
-imp.surf.mask <- raster::mask(imp.surf.crop, spTransform(as(pop.projected, "Spatial"), CRSobj = proj4string(imp.surf.desc))) #mask all non-county values to NA
+imp.surf.crop <- crop(imp.surf.desc, as(pop.projected, "Spatial")) 
+imp.surf.mask <- mask(imp.surf.crop, as(pop.projected, "Spatial")) 
 
-reclass.table <- matrix(c(1,6,1,7,14,NA), ncol = 3, byrow = TRUE) # reclassify values 1-6 into 1 for keep, drop the rest
+# Mask out primary, secondary, and urban tertiary roads
+# Reclassify: keep classes 1-6 (non-road) and drop 7-14 (road)
+reclass.table <- matrix(c(1,6,1,7,14,NA), ncol = 3, byrow = TRUE) 
 
+# Reclassify descriptor file and reproject it.
 imp.roads <- reclassify(imp.surf.mask, reclass.table, right = NA)
-imp.roads.p <- projectRaster(imp.roads, lu.ratio.zp, method = 'ngb') # have to reproject the descriptor file
-#Mask out roads (i.e, all NonNA values in imp.roads.p)
+imp.roads.p <- projectRaster(imp.roads, lu.ratio.zp, method = 'ngb') 
+# Set all road pixels to 0 (all non-NA values in imp.roads.p)
 RISA <- overlay(lu.ratio.zp, imp.roads.p, fun = function(x, y) {
   x[!is.na(y[])] <- 0
   return(x)
 })
 
-#get the block-group level sum of the remaining impervious surface pixels
-RISA.sum <- raster::extract(RISA, as(pop.projected,"Spatial"), fun=sum, na.rm=TRUE,df=TRUE)
+# Get the block group-level sum of the remaining impervious surface pixels
+RISA.sum <- raster::extract(RISA, as(pop.projected,"Spatial"), fun=sum, na.rm=TRUE, df=TRUE)
 
+# Rasterize the block group population estimates and impervious surface pixel sums
 pop.df <- cbind(pop.projected, RISA.sum$layer)
-bg.sum.pop <- fasterize::fasterize(pop.projected, RISA, field = "estimate")
-bg.sum.RISA <- fasterize::fasterize(pop.df, RISA, field = "RISA.sum.layer")
+bg.sum.pop <- fasterize(pop.projected, RISA, field = "estimate")
+bg.sum.RISA <- fasterize(pop.df, RISA, field = "RISA.sum.layer")
 
-#generate density (people/30 m pixel)
+# Generate density (people/30 m pixel) and write to file.
 dasy.pop <- (bg.sum.pop/bg.sum.RISA) * RISA
 
 filename = as.character(glue("DASY/tifs/neon-dasy-{stid}-{ctyid}.tif"))
@@ -417,28 +424,13 @@ filename = as.character(glue("DASY/tifs/neon-dasy-{stid}-{ctyid}.tif"))
 writeRaster(dasy.pop, filename, overwrite = TRUE, NAflag = -9999) # Will overwrite existing file with the same name.
 ```
 
-## Correct missing data values
-
-FIXME THIS MAY NO LONGER BE NECESSARY
-
-After the GeoTIFFs were generated, we manually replaced the `nodata` values in each GeoTIFF with `-9999` so that they can be merged into a single large GeoTIFF.
-
-```{bash, eval = FALSE}
-mkdir DASY/tifs_corrected
-infiles=`cd DASY/tifs && echo neon-dasy-*.tif`
-for tiffile in $infiles; do
-  gdalwarp -dstnodata -9999 -co COMPRESS=LZW DASY/tifs/$tiffile DASY/tifs_corrected/$tiffile
-done
-```
-
-
 ## Mosaic rasters
 
-The following code block is a set of Bash shell commands to mosaic the county-level GeoTIFF together as a virtual raster with `gdalbuildvrt`. Next, `gdal_translate` converts the virtual raster to a single large GeoTIFF
+The following code block is a set of Bash shell commands to mosaic the county-level GeoTIFF together as a virtual raster with `gdalbuildvrt`. Next, `gdal_translate` converts the virtual raster to a single large GeoTIFF.
 
 ```{bash, eval = FALSE}
-cd DASY/tifs_corrected
-gdalbuildvrt dasy_conus_2021-08-17.vrt *.tif
-gdal_translate -co COMPRESS=LZW -co BIGTIFF=YES -of GTiff dasy_conus_2021-08-17.vrt dasy_conus_2021-08-17.tif
+cd DASY/tifs
+gdalbuildvrt dasy_conus_2021-08-26.vrt *.tif
+gdal_translate -co COMPRESS=LZW -co BIGTIFF=YES -of GTiff dasy_conus_2021-08-26.vrt dasy_conus_2021-08-26.tif
 ```
 
